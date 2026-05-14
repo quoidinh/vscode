@@ -6,7 +6,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type * as vscode from 'vscode';
 import { ConfigKey, IConfigurationService } from '../../../../platform/configuration/common/configurationService';
-import { IExperimentationService } from '../../../../platform/telemetry/common/nullExperimentationService';
 import { TestWorkspaceService } from '../../../../platform/test/node/testWorkspaceService';
 import { IWorkspaceService } from '../../../../platform/workspace/common/workspaceService';
 import { DisposableStore } from '../../../../util/vs/base/common/lifecycle';
@@ -47,11 +46,10 @@ describe('ClaudeSessionOptionBuilder', () => {
 		serviceCollection.set(IWorkspaceService, workspaceService);
 		const accessor = serviceCollection.createTestingAccessor();
 		const configService = accessor.get(IConfigurationService);
-		const experimentationService = accessor.get(IExperimentationService);
 		if (configOverrides?.bypassPermissions) {
 			configService.setConfig(ConfigKey.ClaudeAgentAllowDangerouslySkipPermissions, true);
 		}
-		return new ClaudeSessionOptionBuilder(configService, mockFolderMruService, workspaceService, experimentationService);
+		return new ClaudeSessionOptionBuilder(configService, mockFolderMruService, workspaceService);
 	}
 
 	describe('buildPermissionModeGroup', () => {

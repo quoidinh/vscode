@@ -6,13 +6,11 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../log/common/log.js';
-import { createRemoteAgentHostState } from '../../common/remoteAgentHostMetadata.js';
-import { PROTOCOL_VERSION } from '../../common/state/protocol/version/registry.js';
 import {
 	buildCLIDownloadUrl,
 	cleanupRemoteAgentHost,
 	findRunningAgentHost,
-	getAgentHostLockfile,
+	getAgentHostStateFile,
 	getRemoteCLIBin,
 	getRemoteCLIDir,
 	redactToken,
@@ -28,18 +26,6 @@ suite('SSH Remote Agent Host Helpers', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	const logService = new NullLogService();
-	const serverDataFolderName = '.vscode-server-insiders';
-	const quality = 'insider';
-	const lockfilePath = '~/.vscode-server-insiders/cli/agent-host-insider.lock';
-
-	function stateJson(pid: number, port: number, connectionToken: string | undefined | null): string {
-		return JSON.stringify(createRemoteAgentHostState({
-			pid,
-			port,
-			connectionToken: connectionToken ?? undefined,
-			quality,
-		}));
-	}
 
 	suite('validateShellToken', () => {
 		test('accepts alphanumeric strings', () => {
@@ -198,29 +184,19 @@ suite('SSH Remote Agent Host Helpers', () => {
 		});
 	});
 
-	suite('getAgentHostLockfile', () => {
-		test('returns path under the launcher data dir', () => {
+	suite('getAgentHostStateFile', () => {
+		test('returns path under CLI dir', () => {
 			assert.strictEqual(
-				getAgentHostLockfile('.vscode-server-insiders', 'insider'),
-				'~/.vscode-server-insiders/cli/agent-host-insider.lock'
+				getAgentHostStateFile('insider'),
+				'~/.vscode-cli-insider/.agent-host-state'
 			);
 		});
 
-		test('keys lockfile name on quality', () => {
+		test('returns path for stable', () => {
 			assert.strictEqual(
-				getAgentHostLockfile('.vscode-server-oss', 'stable'),
-				'~/.vscode-server-oss/cli/agent-host-stable.lock'
+				getAgentHostStateFile('stable'),
+				'~/.vscode-cli/.agent-host-state'
 			);
-		});
-
-		test('rejects unsafe server data folder names', () => {
-			assert.throws(() => getAgentHostLockfile('foo bar', 'stable'), /Unsafe server data folder name/);
-			assert.throws(() => getAgentHostLockfile('foo/bar', 'stable'), /Unsafe server data folder name/);
-			assert.throws(() => getAgentHostLockfile('$(whoami)', 'stable'), /Unsafe server data folder name/);
-		});
-
-		test('rejects unsafe quality strings', () => {
-			assert.throws(() => getAgentHostLockfile('.vscode-server-oss', 'foo bar'), /Unsafe quality/);
 		});
 	});
 
@@ -237,20 +213,20 @@ suite('SSH Remote Agent Host Helpers', () => {
 			};
 		}
 
-		test('returns notFound when no state file exists', async () => {
+		test('returns undefined when no state file exists', async () => {
 			const exec = createMockExec(new Map([
 				['cat', { stdout: '', stderr: '', code: 1 }],
 			]));
-			const result = await findRunningAgentHost(exec, logService, serverDataFolderName, quality);
-			assert.deepStrictEqual(result, { kind: 'notFound' });
+			const result = await findRunningAgentHost(exec, logService, 'insider');
+			assert.strictEqual(result, undefined);
 		});
 
-		test('returns notFound when state file is empty', async () => {
+		test('returns undefined when state file is empty', async () => {
 			const exec = createMockExec(new Map([
 				['cat', { stdout: '   \n', stderr: '', code: 0 }],
 			]));
-			const result = await findRunningAgentHost(exec, logService, serverDataFolderName, quality);
-			assert.deepStrictEqual(result, { kind: 'notFound' });
+			const result = await findRunningAgentHost(exec, logService, 'insider');
+			assert.strictEqual(result, undefined);
 		});
 
 		test('cleans up corrupt state file', async () => {
@@ -262,125 +238,115 @@ suite('SSH Remote Agent Host Helpers', () => {
 				}
 				return { stdout: '', stderr: '', code: 0 };
 			};
-			const result = await findRunningAgentHost(exec, logService, serverDataFolderName, quality);
-			assert.deepStrictEqual(result, { kind: 'notFound' });
+			const result = await findRunningAgentHost(exec, logService, 'insider');
+			assert.strictEqual(result, undefined);
 			assert.ok(commands.some(c => c.includes('rm -f')));
 		});
 
-		test('cleans up state file with missing schemaVersion', async () => {
+		test('cleans up state file with missing pid', async () => {
 			const commands: string[] = [];
 			const exec: ISshExec = async (command: string) => {
 				commands.push(command);
 				if (command.includes('cat')) {
-					return { stdout: JSON.stringify({ pid: 1234, port: 8080, connectionToken: null }), stderr: '', code: 0 };
+					return { stdout: JSON.stringify({ pid: 0, port: 8080, connectionToken: null }), stderr: '', code: 0 };
 				}
 				return { stdout: '', stderr: '', code: 0 };
 			};
-			const result = await findRunningAgentHost(exec, logService, serverDataFolderName, quality);
-			assert.deepStrictEqual(result, { kind: 'notFound' });
+			const result = await findRunningAgentHost(exec, logService, 'insider');
+			assert.strictEqual(result, undefined);
 			assert.ok(commands.some(c => c.includes('rm -f')));
 		});
 
-		test('rejects state file with invalid pid', async () => {
+		test('cleans up state file with missing port', async () => {
+			const commands: string[] = [];
+			const exec: ISshExec = async (command: string) => {
+				commands.push(command);
+				if (command.includes('cat')) {
+					return { stdout: JSON.stringify({ pid: 1234, port: 0, connectionToken: null }), stderr: '', code: 0 };
+				}
+				return { stdout: '', stderr: '', code: 0 };
+			};
+			const result = await findRunningAgentHost(exec, logService, 'insider');
+			assert.strictEqual(result, undefined);
+			assert.ok(commands.some(c => c.includes('rm -f')));
+		});
+
+		test('rejects state file with string pid', async () => {
 			const exec = createMockExec(new Map([
-				['cat', { stdout: JSON.stringify({ schemaVersion: 1, pid: '1234', port: 8080, protocolVersion: PROTOCOL_VERSION }), stderr: '', code: 0 }],
+				['cat', { stdout: JSON.stringify({ pid: '1234', port: 8080, connectionToken: null }), stderr: '', code: 0 }],
 			]));
-			const result = await findRunningAgentHost(exec, logService, serverDataFolderName, quality);
-			assert.deepStrictEqual(result, { kind: 'notFound' });
+			const result = await findRunningAgentHost(exec, logService, 'insider');
+			assert.strictEqual(result, undefined);
+		});
+
+		test('rejects state file with negative pid', async () => {
+			const exec = createMockExec(new Map([
+				['cat', { stdout: JSON.stringify({ pid: -1, port: 8080, connectionToken: null }), stderr: '', code: 0 }],
+			]));
+			const result = await findRunningAgentHost(exec, logService, 'insider');
+			assert.strictEqual(result, undefined);
+		});
+
+		test('rejects state file with non-integer port', async () => {
+			const exec = createMockExec(new Map([
+				['cat', { stdout: JSON.stringify({ pid: 1234, port: 8080.5, connectionToken: null }), stderr: '', code: 0 }],
+			]));
+			const result = await findRunningAgentHost(exec, logService, 'insider');
+			assert.strictEqual(result, undefined);
+		});
+
+		test('rejects state file with numeric connectionToken', async () => {
+			const exec = createMockExec(new Map([
+				['cat', { stdout: JSON.stringify({ pid: 1234, port: 8080, connectionToken: 42 }), stderr: '', code: 0 }],
+			]));
+			const result = await findRunningAgentHost(exec, logService, 'insider');
+			assert.strictEqual(result, undefined);
 		});
 
 		test('rejects state file with port above 65535', async () => {
 			const exec = createMockExec(new Map([
-				['cat', { stdout: JSON.stringify({ schemaVersion: 1, pid: 1234, port: 70000, protocolVersion: PROTOCOL_VERSION }), stderr: '', code: 0 }],
+				['cat', { stdout: JSON.stringify({ pid: 1234, port: 70000, connectionToken: null }), stderr: '', code: 0 }],
 			]));
-			const result = await findRunningAgentHost(exec, logService, serverDataFolderName, quality);
-			assert.deepStrictEqual(result, { kind: 'notFound' });
+			const result = await findRunningAgentHost(exec, logService, 'insider');
+			assert.strictEqual(result, undefined);
 		});
 
 		test('cleans up stale state when PID is not running', async () => {
-			const state = stateJson(9999, 8080, 'tok123');
+			const state = { pid: 9999, port: 8080, connectionToken: 'tok123' };
 			const commands: string[] = [];
 			const exec: ISshExec = async (command: string) => {
 				commands.push(command);
 				if (command.includes('cat')) {
-					return { stdout: state, stderr: '', code: 0 };
+					return { stdout: JSON.stringify(state), stderr: '', code: 0 };
 				}
 				if (command.includes('kill -0')) {
 					return { stdout: '', stderr: '', code: 1 }; // PID not running
 				}
 				return { stdout: '', stderr: '', code: 0 };
 			};
-			const result = await findRunningAgentHost(exec, logService, serverDataFolderName, quality);
-			assert.deepStrictEqual(result, { kind: 'notFound' });
+			const result = await findRunningAgentHost(exec, logService, 'insider');
+			assert.strictEqual(result, undefined);
 			assert.ok(commands.some(c => c.includes('rm -f')));
 		});
 
 		test('returns port and token when PID is alive', async () => {
-			const state = stateJson(1234, 8080, 'mytoken');
+			const state = { pid: 1234, port: 8080, connectionToken: 'mytoken' };
 			const exec = createMockExec(new Map([
-				['cat', { stdout: state, stderr: '', code: 0 }],
+				['cat', { stdout: JSON.stringify(state), stderr: '', code: 0 }],
 				['kill -0', { stdout: '', stderr: '', code: 0 }],
 			]));
-			const result = await findRunningAgentHost(exec, logService, serverDataFolderName, quality);
-			assert.deepStrictEqual(result, { kind: 'compatible', host: '127.0.0.1', port: 8080, connectionToken: 'mytoken' });
+			const result = await findRunningAgentHost(exec, logService, 'insider');
+			assert.deepStrictEqual(result, { port: 8080, connectionToken: 'mytoken' });
 		});
 
 		test('returns undefined connectionToken when state has null token', async () => {
-			const state = stateJson(1234, 8080, null);
-			const exec = createMockExec(new Map([
-				['cat', { stdout: state, stderr: '', code: 0 }],
-				['kill -0', { stdout: '', stderr: '', code: 0 }],
-			]));
-			const result = await findRunningAgentHost(exec, logService, serverDataFolderName, quality);
-			assert.deepStrictEqual(result, { kind: 'compatible', host: '127.0.0.1', port: 8080, connectionToken: undefined });
-		});
-
-		test('treats newer protocol version as compatible (the AH may speak a newer version than this build)', async () => {
-			// The agent host server is downloaded on demand by the remote
-			// CLI and may speak a newer protocol than this desktop. Reuse
-			// is the right default; the renderer↔AH handshake will surface
-			// any genuine incompatibility, and the SSH service falls back
-			// to spawning fresh if the relay refuses to connect.
-			const state = JSON.parse(stateJson(1234, 8080, null));
-			state.protocolVersion = '99.0.0';
+			const state = { pid: 1234, port: 8080, connectionToken: null };
 			const exec = createMockExec(new Map([
 				['cat', { stdout: JSON.stringify(state), stderr: '', code: 0 }],
 				['kill -0', { stdout: '', stderr: '', code: 0 }],
 			]));
-			const result = await findRunningAgentHost(exec, logService, serverDataFolderName, quality);
-			assert.deepStrictEqual(result, { kind: 'compatible', host: '127.0.0.1', port: 8080, connectionToken: undefined });
-		});
-
-		test('maps recorded `0.0.0.0` bind to loopback when dialing', async () => {
-			const state = JSON.parse(stateJson(1234, 8080, null));
-			state.host = '0.0.0.0';
-			const exec = createMockExec(new Map([
-				['cat', { stdout: JSON.stringify(state), stderr: '', code: 0 }],
-				['kill -0', { stdout: '', stderr: '', code: 0 }],
-			]));
-			const result = await findRunningAgentHost(exec, logService, serverDataFolderName, quality);
-			assert.deepStrictEqual(result, { kind: 'compatible', host: '127.0.0.1', port: 8080, connectionToken: undefined });
-		});
-
-		test('preserves specific recorded host (e.g. IPv6 loopback)', async () => {
-			const state = JSON.parse(stateJson(1234, 8080, null));
-			state.host = '::1';
-			const exec = createMockExec(new Map([
-				['cat', { stdout: JSON.stringify(state), stderr: '', code: 0 }],
-				['kill -0', { stdout: '', stderr: '', code: 0 }],
-			]));
-			const result = await findRunningAgentHost(exec, logService, serverDataFolderName, quality);
-			assert.deepStrictEqual(result, { kind: 'compatible', host: '::1', port: 8080, connectionToken: undefined });
-		});
-
-		test('reads from the per-quality launcher lockfile path', async () => {
-			const commands: string[] = [];
-			const exec: ISshExec = async command => {
-				commands.push(command);
-				return { stdout: '', stderr: '', code: 1 };
-			};
-			await findRunningAgentHost(exec, logService, serverDataFolderName, quality);
-			assert.ok(commands.some(c => c.includes(lockfilePath)));
+			const result = await findRunningAgentHost(exec, logService, 'insider');
+			assert.deepStrictEqual(result, { port: 8080, connectionToken: undefined });
 		});
 	});
 
@@ -392,7 +358,7 @@ suite('SSH Remote Agent Host Helpers', () => {
 				commands.push(command);
 				return { stdout: '', stderr: '', code: 0 };
 			};
-			await writeAgentHostState(exec, logService, serverDataFolderName, quality, undefined, 8080, 'token');
+			await writeAgentHostState(exec, logService, 'insider', undefined, 8080, 'token');
 			assert.strictEqual(commands.length, 0);
 		});
 
@@ -402,27 +368,24 @@ suite('SSH Remote Agent Host Helpers', () => {
 				commands.push(command);
 				return { stdout: '', stderr: '', code: 0 };
 			};
-			await writeAgentHostState(exec, logService, serverDataFolderName, quality, 0, 8080, 'token');
+			await writeAgentHostState(exec, logService, 'insider', 0, 8080, 'token');
 			assert.strictEqual(commands.length, 0);
 		});
 
-		test('writes lockfile with canonical metadata JSON', async () => {
+		test('writes state file with correct JSON', async () => {
 			const commands: string[] = [];
 			const exec: ISshExec = async (command: string) => {
 				commands.push(command);
 				return { stdout: '', stderr: '', code: 0 };
 			};
-			await writeAgentHostState(exec, logService, serverDataFolderName, quality, 1234, 8080, 'mytoken');
+			await writeAgentHostState(exec, logService, 'insider', 1234, 8080, 'mytoken');
 			assert.strictEqual(commands.length, 1);
-			assert.ok(commands[0].includes(lockfilePath));
-			assert.ok(commands[0].includes('"schemaVersion":1'));
+			assert.ok(commands[0].includes('.agent-host-state'));
+			// Verify the JSON content is present in the echo command
 			assert.ok(commands[0].includes('"pid":1234'));
 			assert.ok(commands[0].includes('"port":8080'));
 			assert.ok(commands[0].includes('"connectionToken":"mytoken"'));
-			assert.ok(commands[0].includes(`"protocolVersion":"${PROTOCOL_VERSION}"`));
-			assert.ok(commands[0].includes('"quality":"insider"'));
-			// Atomic-ish write: ensure dir, remove old file, restrictive umask
-			assert.ok(commands[0].includes('mkdir -p'));
+			// Verify restrictive umask in a subshell is used to protect the connection token
 			assert.ok(commands[0].includes('rm -f'));
 			assert.ok(commands[0].includes('(umask 077'));
 		});
@@ -433,7 +396,7 @@ suite('SSH Remote Agent Host Helpers', () => {
 				commands.push(command);
 				return { stdout: '', stderr: '', code: 0 };
 			};
-			await writeAgentHostState(exec, logService, serverDataFolderName, quality, 1234, 8080, undefined);
+			await writeAgentHostState(exec, logService, 'insider', 1234, 8080, undefined);
 			assert.strictEqual(commands.length, 1);
 			assert.ok(commands[0].includes('"connectionToken":null'));
 		});
@@ -445,7 +408,8 @@ suite('SSH Remote Agent Host Helpers', () => {
 			const warnings: string[] = [];
 			const capturingLog = new NullLogService();
 			capturingLog.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
-			await writeAgentHostState(exec, capturingLog, serverDataFolderName, quality, 1234, 8080, 'tok');
+			await writeAgentHostState(exec, capturingLog, 'insider', 1234, 8080, 'tok');
+			// Should log a warning with exit code and stderr
 			assert.strictEqual(warnings.length, 1);
 			assert.ok(warnings[0].includes('Failed to write'));
 			assert.ok(warnings[0].includes('exit code 1'));
@@ -455,7 +419,7 @@ suite('SSH Remote Agent Host Helpers', () => {
 
 	suite('cleanupRemoteAgentHost', () => {
 
-		test('removes lockfile even when no state exists', async () => {
+		test('removes state file even when no state exists', async () => {
 			const commands: string[] = [];
 			const exec: ISshExec = async (command: string) => {
 				commands.push(command);
@@ -464,23 +428,23 @@ suite('SSH Remote Agent Host Helpers', () => {
 				}
 				return { stdout: '', stderr: '', code: 0 };
 			};
-			await cleanupRemoteAgentHost(exec, logService, serverDataFolderName, quality);
-			assert.ok(commands.some(c => c.includes(`rm -f ${lockfilePath}`)));
+			await cleanupRemoteAgentHost(exec, logService, 'insider');
+			assert.ok(commands.some(c => c.includes('rm -f')));
 		});
 
-		test('kills process and removes lockfile', async () => {
-			const state = stateJson(5678, 9090, null);
+		test('kills process and removes state file', async () => {
+			const state = { pid: 5678, port: 9090, connectionToken: null };
 			const commands: string[] = [];
 			const exec: ISshExec = async (command: string) => {
 				commands.push(command);
 				if (command.includes('cat')) {
-					return { stdout: state, stderr: '', code: 0 };
+					return { stdout: JSON.stringify(state), stderr: '', code: 0 };
 				}
 				return { stdout: '', stderr: '', code: 0 };
 			};
-			await cleanupRemoteAgentHost(exec, logService, serverDataFolderName, quality);
+			await cleanupRemoteAgentHost(exec, logService, 'insider');
 			assert.ok(commands.some(c => c.includes('kill 5678')));
-			assert.ok(commands.some(c => c.includes(`rm -f ${lockfilePath}`)));
+			assert.ok(commands.some(c => c.includes('rm -f')));
 		});
 
 		test('handles corrupt state file gracefully', async () => {
@@ -492,9 +456,41 @@ suite('SSH Remote Agent Host Helpers', () => {
 				}
 				return { stdout: '', stderr: '', code: 0 };
 			};
-			await cleanupRemoteAgentHost(exec, logService, serverDataFolderName, quality);
+			// Should not throw
+			await cleanupRemoteAgentHost(exec, logService, 'insider');
+			// Should still clean up the file
 			assert.ok(commands.some(c => c.includes('rm -f')));
+			// Should not have attempted to kill anything
 			assert.ok(!commands.some(c => c.startsWith('kill')));
+		});
+
+		test('does not kill when pid is 0', async () => {
+			const state = { pid: 0, port: 9090, connectionToken: null };
+			const commands: string[] = [];
+			const exec: ISshExec = async (command: string) => {
+				commands.push(command);
+				if (command.includes('cat')) {
+					return { stdout: JSON.stringify(state), stderr: '', code: 0 };
+				}
+				return { stdout: '', stderr: '', code: 0 };
+			};
+			await cleanupRemoteAgentHost(exec, logService, 'insider');
+			assert.ok(!commands.some(c => c.match(/^kill \d/)));
+			assert.ok(commands.some(c => c.includes('rm -f')));
+		});
+
+		test('kills process for stable quality', async () => {
+			const state = { pid: 1234, port: 8080, connectionToken: null };
+			const commands: string[] = [];
+			const exec: ISshExec = async (command: string) => {
+				commands.push(command);
+				if (command.includes('cat')) {
+					return { stdout: JSON.stringify(state), stderr: '', code: 0 };
+				}
+				return { stdout: '', stderr: '', code: 0 };
+			};
+			await cleanupRemoteAgentHost(exec, logService, 'stable');
+			assert.ok(commands.some(c => c.includes('kill 1234')));
 		});
 	});
 });

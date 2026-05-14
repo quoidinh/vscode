@@ -1365,8 +1365,7 @@ export class CopilotAgent extends Disposable implements IAgent {
 		const plugins = snapshot?.plugins ?? [];
 
 		return async (callbacks: Parameters<SessionWrapperFactory>[0]) => {
-			const disableCustomTerminalTool = this._configurationService.getRootValue(agentHostCustomizationConfigSchema, AgentHostConfigKey.DisableCustomTerminalTool) === true;
-			const shellTools = disableCustomTerminalTool ? [] : await createShellTools(shellManager, this._terminalManager, this._logService);
+			const shellTools = await createShellTools(shellManager, this._terminalManager, this._logService);
 			const customAgents = await toSdkCustomAgents(plugins.flatMap(p => p.agents), this._fileService);
 			return {
 				onPermissionRequest: callbacks.onPermissionRequest,

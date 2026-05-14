@@ -43,7 +43,6 @@ import { ChatConfiguration } from '../../../common/constants.js';
 import { IChatEntitlementService } from '../../../../../services/chat/common/chatEntitlementService.js';
 import { IChatWidgetService } from '../../chat.js';
 import { ITelemetryService } from '../../../../../../platform/telemetry/common/telemetry.js';
-import { ITitleService } from '../../../../../services/title/browser/titleService.js';
 
 // Telemetry types
 type AgentStatusClickAction =
@@ -147,9 +146,11 @@ export class AgentTitleBarStatusWidget extends BaseActionViewItem {
 	/** Menu for ChatTitleBarMenu items (same as chat controls dropdown) */
 	private readonly _chatTitleBarMenu;
 
+	/** WindowTitle instance for honoring the user's window.title setting */
+	private readonly _windowTitle: WindowTitle;
+
 	constructor(
 		action: IAction,
-		private readonly _windowTitle: WindowTitle,
 		options: IBaseActionViewItemOptions | undefined,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IAgentTitleBarStatusService private readonly agentTitleBarStatusService: IAgentTitleBarStatusService,
@@ -175,6 +176,9 @@ export class AgentTitleBarStatusWidget extends BaseActionViewItem {
 
 		// Create menu for ChatTitleBarMenu to show in sparkle section dropdown
 		this._chatTitleBarMenu = this._register(this.menuService.createMenu(MenuId.ChatTitleBarMenu, this.contextKeyService));
+
+		// Create WindowTitle to honor the user's window.title setting
+		this._windowTitle = this._register(this.instantiationService.createInstance(WindowTitle, mainWindow));
 
 		// Re-render when control mode or session info changes
 		this._register(this.agentTitleBarStatusService.onDidChangeMode(() => {
@@ -1396,8 +1400,7 @@ export class AgentTitleBarStatusRendering extends Disposable implements IWorkben
 		@IActionViewItemService actionViewItemService: IActionViewItemService,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IConfigurationService configurationService: IConfigurationService,
-		@IContextKeyService contextKeyService: IContextKeyService,
-		@ITitleService titleService: ITitleService,
+		@IContextKeyService contextKeyService: IContextKeyService
 	) {
 		super();
 
@@ -1405,7 +1408,7 @@ export class AgentTitleBarStatusRendering extends Disposable implements IWorkben
 			if (!(action instanceof SubmenuItemAction)) {
 				return undefined;
 			}
-			return instantiationService.createInstance(AgentTitleBarStatusWidget, action, titleService.windowTitle, options);
+			return instantiationService.createInstance(AgentTitleBarStatusWidget, action, options);
 		}, undefined));
 
 		// Add/remove CSS classes on workbench based on settings.

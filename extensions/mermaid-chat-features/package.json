@@ -84,9 +84,6 @@
         "viewType": "vscode.chat-mermaid-features.chatOutputItem",
         "mimeTypes": [
           "text/vnd.mermaid"
-        ],
-        "codeBlockLanguageIdentifiers": [
-          "mermaid"
         ]
       }
     ],

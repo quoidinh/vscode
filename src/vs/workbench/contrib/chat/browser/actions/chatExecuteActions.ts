@@ -1032,6 +1032,7 @@ interface IGetHandoffsArgs {
 	 */
 	sourceCustomAgent?: string;
 
+	sessionType?: string;
 }
 
 /**
@@ -1057,11 +1058,11 @@ class GetHandoffsAction extends Action2 {
 		});
 	}
 
-	async run(accessor: ServicesAccessor, ...args: unknown[]) {
+	run(accessor: ServicesAccessor, ...args: unknown[]) {
 		const modeService = accessor.get(IChatModeService);
 		const arg = args.at(0) as IGetHandoffsArgs | undefined;
 
-		const { builtin, custom } = await modeService.getLocalModes();
+		const { builtin, custom } = modeService.getModes(arg?.sessionType ?? localChatSessionType);
 		let allModes: readonly IChatMode[] = [...builtin, ...custom];
 
 		if (arg?.sourceCustomAgent) {

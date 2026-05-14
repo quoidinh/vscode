@@ -33,11 +33,6 @@ declare module 'vscode' {
 		detail: string | undefined;
 
 		/**
-		 * Optional tooltip text shown when hovering over the description.
-		 */
-		tooltip: string | undefined;
-
-		/**
 		 * Shows the entry in the chat status.
 		 */
 		show(): void;

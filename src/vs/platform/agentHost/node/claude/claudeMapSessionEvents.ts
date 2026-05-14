@@ -351,11 +351,15 @@ function mapResult(
 			},
 		});
 	}
-	// `SessionTurnComplete` is emitted by the session via
-	// `ClaudeSdkPipeline.onTurnComplete`, NOT here. The pipeline knows
-	// when the protocol Turn is truly done (queue fully drained vs an
-	// intermediate result during a steering preempt — CONTEXT.md M10);
-	// the mapper does not have that state.
+	signals.push({
+		kind: 'action',
+		session,
+		action: {
+			type: ActionType.SessionTurnComplete,
+			session: sessionStr,
+			turnId,
+		},
+	});
 	state.clearPendingToolCalls(logService);
 	return signals;
 }

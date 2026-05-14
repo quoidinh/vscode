@@ -1,0 +1,88 @@
+{
+  "name": "codix-core",
+  "displayName": "Codix Core AI",
+  "description": "Integrated AI Operating System features for Codix",
+  "version": "0.1.0",
+  "publisher": "codix",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./out/extension.js",
+  "scripts": {
+    "compile": "tsc -p ./"
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codix-explorer",
+          "title": "Codix AI",
+          "icon": "media/logo.svg"
+        },
+        {
+          "id": "codix-clip-studio",
+          "title": "Clip Studio",
+          "icon": "media/clip.svg"
+        },
+        {
+          "id": "codix-ship-center",
+          "title": "Ship Center",
+          "icon": "media/ship.svg"
+        }
+      ]
+    },
+    "views": {
+      "codix-explorer": [
+        {
+          "type": "webview",
+          "id": "codix.chatView",
+          "name": "Codix Chat",
+          "icon": "$(comment-discussion)"
+        }
+      ],
+      "codix-clip-studio": [
+        {
+          "type": "webview",
+          "id": "codix.clipView",
+          "name": "Clip Editor",
+          "icon": "$(play-circle)"
+        }
+      ],
+      "codix-ship-center": [
+        {
+          "type": "webview",
+          "id": "codix.shipView",
+          "name": "Marketplace",
+          "icon": "$(storefront)"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "codix.syncWorkspace",
+        "title": "Codix: Sync Workspace Folder",
+        "category": "Codix"
+      },
+      {
+        "command": "codix.openChat",
+        "title": "Codix: Open Chat",
+        "category": "Codix"
+      }
+    ]
+  },
+  "dependencies": {
+    "@codix/sdk": "file:../../../packages/sdk-ts"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0",
+    "@types/node": "16.x",
+    "typescript": "^5.1.3"
+  }
+}

@@ -7,7 +7,6 @@ import { VSBuffer } from '../../../base/common/buffer.js';
 import { Disposable, IDisposable } from '../../../base/common/lifecycle.js';
 import { URI, UriComponents } from '../../../base/common/uri.js';
 import { ExtensionIdentifier } from '../../../platform/extensions/common/extensions.js';
-import { ILogService } from '../../../platform/log/common/log.js';
 import { IChatOutputRendererService } from '../../contrib/chat/browser/chatOutputItemRenderer.js';
 import { IExtHostContext } from '../../services/extensions/common/extHostCustomers.js';
 import { ExtHostChatOutputRendererShape, ExtHostContext, MainThreadChatOutputRendererShape } from '../common/extHost.protocol.js';
@@ -25,7 +24,6 @@ export class MainThreadChatOutputRenderer extends Disposable implements MainThre
 		extHostContext: IExtHostContext,
 		private readonly _mainThreadWebview: MainThreadWebviews,
 		@IChatOutputRendererService private readonly _rendererService: IChatOutputRendererService,
-		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
 		this._proxy = extHostContext.getProxy(ExtHostContext.ExtHostChatOutputRenderer);
@@ -39,30 +37,22 @@ export class MainThreadChatOutputRenderer extends Disposable implements MainThre
 	}
 
 	$registerChatOutputRenderer(viewType: string, extensionId: ExtensionIdentifier, extensionLocation: UriComponents): void {
-		const existingRegistration = this.registeredRenderers.get(viewType);
-		if (existingRegistration) {
-			this._logService.warn(`Re-registering chat output renderer for view type '${viewType}' from extension '${extensionId.value}'.`);
-			existingRegistration.dispose();
-		}
-
-		const disposable = this._rendererService.registerRenderer(viewType, {
-			renderOutputPart: async (mime, data, webview, context, token) => {
+		this._rendererService.registerRenderer(viewType, {
+			renderOutputPart: async (mime, data, webview, token) => {
 				const webviewHandle = `chat-output-${++this._webviewHandlePool}`;
 
 				this._mainThreadWebview.addWebview(webviewHandle, webview, {
 					serializeBuffersForPostMessage: true,
 				});
 
-				return this._proxy.$renderChatOutput(viewType, mime, VSBuffer.wrap(data), webviewHandle, context, token);
+				return this._proxy.$renderChatOutput(viewType, mime, VSBuffer.wrap(data), webviewHandle, token);
 			},
 		}, {
 			extension: { id: extensionId, location: URI.revive(extensionLocation) }
 		});
-		this.registeredRenderers.set(viewType, disposable);
 	}
 
 	$unregisterChatOutputRenderer(viewType: string): void {
 		this.registeredRenderers.get(viewType)?.dispose();
-		this.registeredRenderers.delete(viewType);
 	}
 }

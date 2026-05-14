@@ -345,6 +345,8 @@ export interface TokenEnvelope {
 	codesearch: boolean;
 	/** Whether content exclusion (.copilotignore) is enabled. */
 	copilotignore_enabled: boolean;
+	/** Whether VS Code electron fetcher v2 is enabled. */
+	vsc_electron_fetcher_v2: boolean;
 
 	// Consent settings
 	/** 'enabled', 'disabled', or 'unconfigured' for public code suggestions. */
@@ -363,6 +365,8 @@ export interface TokenEnvelope {
 	limited_user_reset_date?: number | null;
 	/** Organization tracking IDs if user has org access. */
 	organization_list?: string[];
+	/** Notification to show in editor on successful token retrieval. */
+	user_notification?: NotificationEnvelope;
 }
 
 /**
@@ -415,6 +419,7 @@ const tokenEnvelopeValidator = vObj({
 	code_review_enabled: vBoolean(),
 	codesearch: vBoolean(),
 	copilotignore_enabled: vBoolean(),
+	vsc_electron_fetcher_v2: vBoolean(),
 	public_suggestions: vEnum('enabled', 'disabled', 'unconfigured'),
 	telemetry: vEnum('enabled', 'disabled'),
 	endpoints: vObj({
@@ -429,7 +434,8 @@ const tokenEnvelopeValidator = vObj({
 		completions: vRequired(vNumber()),
 	})),
 	limited_user_reset_date: vNullable(vNumber()),
-	organization_list: vArray(vString())
+	organization_list: vArray(vString()),
+	user_notification: notificationEnvelopeValidator,
 });
 
 const standardErrorEnvelopeValidator = vObj({
@@ -559,6 +565,7 @@ export function createTestExtendedTokenInfo(overrides?: Partial<ExtendedTokenInf
 		code_review_enabled: false,
 		codesearch: false,
 		copilotignore_enabled: false,
+		vsc_electron_fetcher_v2: false,
 		// Consent settings
 		public_suggestions: 'enabled',
 		telemetry: 'enabled',

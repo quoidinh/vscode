@@ -153,11 +153,6 @@ class MockLanguageModelsService implements ILanguageModelsService {
 	getRecentlyUsedModelIds(): string[] { return []; }
 	addToRecentlyUsedList(): void { }
 	clearRecentlyUsedList(): void { }
-	getPinnedModelIds(): string[] { return []; }
-	pinModel(_modelIdentifier: string): void { }
-	unpinModel(_modelIdentifier: string): void { }
-	isModelPinned(_modelIdentifier: string): boolean { return false; }
-	onDidChangePinnedModels = Event.None;
 	getModelsControlManifest(): IModelsControlManifest { return { free: {}, paid: {} }; }
 	restrictedChatParticipants = observableValue('restrictedChatParticipants', Object.create(null));
 }
@@ -196,6 +191,7 @@ suite('ChatModelsViewModel', () => {
 			vendor: 'copilot',
 			maxInputTokens: 8192,
 			maxOutputTokens: 4096,
+			modelPickerCategory: { label: 'Copilot', order: 1 },
 			isUserSelectable: true,
 			capabilities: {
 				toolCalling: true,
@@ -216,6 +212,7 @@ suite('ChatModelsViewModel', () => {
 			vendor: 'copilot',
 			maxInputTokens: 8192,
 			maxOutputTokens: 4096,
+			modelPickerCategory: { label: 'Copilot', order: 1 },
 			isUserSelectable: true,
 			capabilities: {
 				toolCalling: true,
@@ -236,6 +233,7 @@ suite('ChatModelsViewModel', () => {
 			vendor: 'openai',
 			maxInputTokens: 4096,
 			maxOutputTokens: 2048,
+			modelPickerCategory: { label: 'OpenAI', order: 2 },
 			isUserSelectable: true,
 			capabilities: {
 				toolCalling: true,
@@ -256,6 +254,7 @@ suite('ChatModelsViewModel', () => {
 			vendor: 'openai',
 			maxInputTokens: 8192,
 			maxOutputTokens: 4096,
+			modelPickerCategory: { label: 'OpenAI', order: 2 },
 			isUserSelectable: false,
 			capabilities: {
 				toolCalling: false,
@@ -548,6 +547,7 @@ suite('ChatModelsViewModel', () => {
 			vendor: 'copilot',
 			maxInputTokens: 8192,
 			maxOutputTokens: 4096,
+			modelPickerCategory: { label: 'Copilot', order: 1 },
 			isUserSelectable: true,
 			capabilities: {
 				toolCalling: true,
@@ -569,6 +569,7 @@ suite('ChatModelsViewModel', () => {
 				vendor: 'copilot',
 				maxInputTokens: 8192,
 				maxOutputTokens: 4096,
+				modelPickerCategory: { label: 'Copilot', order: 1 },
 				isUserSelectable: true,
 				capabilities: {
 					toolCalling: true,
@@ -652,6 +653,7 @@ suite('ChatModelsViewModel', () => {
 			vendor: 'anthropic',
 			maxInputTokens: 100000,
 			maxOutputTokens: 4096,
+			modelPickerCategory: { label: 'Anthropic', order: 3 },
 			isUserSelectable: true,
 			capabilities: {
 				toolCalling: true,
@@ -680,6 +682,7 @@ suite('ChatModelsViewModel', () => {
 			vendor: 'azure',
 			maxInputTokens: 8192,
 			maxOutputTokens: 4096,
+			modelPickerCategory: { label: 'Azure', order: 4 },
 			isUserSelectable: true,
 			capabilities: {
 				toolCalling: true,

@@ -56,6 +56,7 @@ export class AgentHostLanguageModelProvider extends Disposable implements ILangu
 						isUserSelectable: true,
 						pricing: multiplierNumeric !== undefined ? `${multiplierNumeric}x` : undefined,
 						multiplierNumeric,
+						modelPickerCategory: undefined,
 						targetChatSessionType: this._sessionType,
 						capabilities: {
 							vision: m.supportsVision ?? false,

@@ -1,0 +1,13 @@
+<svg width="200" height="200" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="codix_gradient" x1="0" y1="0" x2="200" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#A855F7" />
+      <stop offset="100%" stop-color="#3B82F6" />
+    </linearGradient>
+  </defs>
+  <!-- Monogram C -->
+  <path d="M140 40C125 30 105 25 85 25C45 25 15 55 15 100C15 145 45 175 85 175C105 175 125 170 140 160" stroke="url(#codix_gradient)" stroke-width="25" stroke-linecap="round" />
+  <!-- Monogram X -->
+  <path d="M80 60L160 140" stroke="url(#codix_gradient)" stroke-width="25" stroke-linecap="round" />
+  <path d="M160 60L80 140" stroke="url(#codix_gradient)" stroke-width="25" stroke-linecap="round" />
+</svg>

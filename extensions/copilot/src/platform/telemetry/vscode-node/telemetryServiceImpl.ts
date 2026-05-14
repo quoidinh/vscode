@@ -23,6 +23,7 @@ export class TelemetryService extends BaseTelemetryService {
 	constructor(
 		extensionName: string,
 		internalMSFTAIKey: string,
+		internalLargeEventMSFTAIKey: string,
 		externalMSFTAIKey: string,
 		externalGHAIKey: string,
 		estrictedGHAIKey: string,
@@ -45,6 +46,7 @@ export class TelemetryService extends BaseTelemetryService {
 		};
 		const microsoftTelemetrySender = new MicrosoftTelemetrySender(
 			internalMSFTAIKey,
+			internalLargeEventMSFTAIKey,
 			externalMSFTAIKey,
 			tokenStore,
 			customFetcher

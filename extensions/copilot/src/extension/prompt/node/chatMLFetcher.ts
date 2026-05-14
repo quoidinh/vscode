@@ -1123,7 +1123,7 @@ export class ChatMLFetcherImpl extends AbstractChatMLFetcher {
 			'OpenAI-Intent': intent,
 			'X-GitHub-Api-Version': '2025-05-01',
 			'X-Interaction-Id': this._interactionService.interactionId,
-			...(chatEndpointInfo.getExtraHeaders ? chatEndpointInfo.getExtraHeaders(location, interactionTypeOverride) : {}),
+			...(chatEndpointInfo.getExtraHeaders ? chatEndpointInfo.getExtraHeaders(location) : {}),
 		};
 		additionalHeaders['X-Interaction-Type'] = agentInteractionType;
 		additionalHeaders['X-Agent-Task-Id'] = ourRequestId;

@@ -340,6 +340,7 @@ suite('RunSubagentTool', () => {
 				maxInputTokens: 128000,
 				maxOutputTokens: 8192,
 				isDefaultForLocation: {},
+				modelPickerCategory: undefined,
 				multiplierNumeric,
 				capabilities: { toolCalling: true },
 			};
@@ -615,6 +616,7 @@ suite('RunSubagentTool', () => {
 				maxInputTokens: 128000,
 				maxOutputTokens: 8192,
 				isDefaultForLocation: {},
+				modelPickerCategory: undefined,
 				multiplierNumeric,
 				capabilities: { toolCalling: true },
 			};

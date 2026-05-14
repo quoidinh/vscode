@@ -244,10 +244,9 @@ export class MdDocumentRenderer {
 
 	#getScripts(resourceProvider: WebviewResourceProvider, nonce: string): string {
 		const out: string[] = [];
-		for (const script of this.#contributionProvider.contributions.previewScripts) {
-			const type = script.type ? ` type="${escapeAttribute(script.type)}"` : '';
-			out.push(`<script async${type}
-				src="${escapeAttribute(resourceProvider.asWebviewUri(script.resource))}"
+		for (const resource of this.#contributionProvider.contributions.previewScripts) {
+			out.push(`<script async
+				src="${escapeAttribute(resourceProvider.asWebviewUri(resource))}"
 				nonce="${nonce}"
 				charset="UTF-8"></script>`);
 		}

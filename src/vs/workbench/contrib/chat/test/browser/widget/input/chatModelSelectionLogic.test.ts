@@ -59,6 +59,7 @@ function createModel(
 			maxOutputTokens: 4096,
 			isDefaultForLocation: {},
 			isUserSelectable: true,
+			modelPickerCategory: undefined,
 			capabilities: { toolCalling: true, agentMode: true },
 			...overrides,
 		} as ILanguageModelChatMetadata,

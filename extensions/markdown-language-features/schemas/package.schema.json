@@ -17,31 +17,8 @@
 					"type": "array",
 					"description": "Contributed scripts that are executed in the Markdown preview",
 					"items": {
-						"oneOf": [
-							{
-								"type": "string",
-								"description": "Extension relative path to a JavaScript file"
-							},
-							{
-								"type": "object",
-								"required": [
-									"path"
-								],
-								"properties": {
-									"path": {
-										"type": "string",
-										"description": "Extension relative path to a JavaScript file"
-									},
-									"type": {
-										"type": "string",
-										"enum": [
-											"module"
-										],
-										"description": "The script type to use when loading the contributed script"
-									}
-								}
-							}
-						]
+						"type": "string",
+						"description": "Extension relative path to a JavaScript file"
 					}
 				},
 				"markdown.markdownItPlugins": {

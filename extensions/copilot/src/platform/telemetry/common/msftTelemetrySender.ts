@@ -17,6 +17,7 @@ export interface ITelemetryReporter extends ITelemetrySender {
 export class BaseMsftTelemetrySender implements IMSFTTelemetrySender {
 	// Telemetry reporter used for collecting telemetry on internal Microsoft customers
 	protected _internalTelemetryReporter: ITelemetryReporter | undefined;
+	protected _internalLargeEventTelemetryReporter: ITelemetryReporter | undefined;
 	private _externalTelemetryReporter: ITelemetryReporter;
 
 	protected readonly _disposables: DisposableStore = new DisposableStore();
@@ -28,9 +29,9 @@ export class BaseMsftTelemetrySender implements IMSFTTelemetrySender {
 
 	constructor(
 		copilotTokenStore: ICopilotTokenStore,
-		private readonly _createTelemetryReporter: (internal: boolean) => ITelemetryReporter
+		private readonly _createTelemetryReporter: (internal: boolean, largeEvents: boolean) => ITelemetryReporter
 	) {
-		this._externalTelemetryReporter = this._createTelemetryReporter(false);
+		this._externalTelemetryReporter = this._createTelemetryReporter(false, false);
 		this.processToken(copilotTokenStore.copilotToken);
 		this._disposables.add(copilotTokenStore.onDidStoreUpdate(() => this.processToken(copilotTokenStore.copilotToken)));
 	}
@@ -49,6 +50,9 @@ export class BaseMsftTelemetrySender implements IMSFTTelemetrySender {
 		properties = { ...properties, 'common.tid': this._tid, 'common.userName': this._username ?? 'undefined' };
 		measurements = { ...measurements, 'common.isVscodeTeamMember': this._vscodeTeamMember ? 1 : 0 };
 		this._internalTelemetryReporter.sendRawTelemetryEvent(eventName, properties, measurements);
+		if (this._internalLargeEventTelemetryReporter) { // Also duplicate events to the large data store for testing of the pipeline
+			this._internalLargeEventTelemetryReporter.sendRawTelemetryEvent(eventName, properties, measurements);
+		}
 	}
 
 	/**
@@ -102,12 +106,15 @@ export class BaseMsftTelemetrySender implements IMSFTTelemetrySender {
 		this._isInternal = !!token?.isInternal;
 
 		if (this._isInternal) {
-			this._internalTelemetryReporter ??= this._createTelemetryReporter(true);
+			this._internalTelemetryReporter ??= this._createTelemetryReporter(true, false);
+			this._internalLargeEventTelemetryReporter ??= this._createTelemetryReporter(true, true);
 		}
 
 		if (!token || !this._isInternal) {
 			this._internalTelemetryReporter?.dispose();
 			this._internalTelemetryReporter = undefined;
+			this._internalLargeEventTelemetryReporter?.dispose();
+			this._internalLargeEventTelemetryReporter = undefined;
 			return;
 		}
 	}

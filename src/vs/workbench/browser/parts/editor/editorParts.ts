@@ -64,11 +64,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 
 	readonly mainPart: MainEditorPart;
 
-	// Most recently active parts across all windows. Multiple parts can
-	// share the same window (e.g. main part and modal part both live in
-	// the main window) so this list also acts as a per-window MRU when
-	// filtered by document. See `getMostRecentlyActivePartByDocument`.
-	private mostRecentActiveParts: EditorPart[];
+	private mostRecentActiveParts: MainEditorPart[];
 
 	constructor(
 		@IInstantiationService protected readonly instantiationService: IInstantiationService,
@@ -315,23 +311,21 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 	//#region Helpers
 
 	protected override getPartByDocument(document: Document): EditorPart {
-		// Multiple editor parts can share the same document because
-		// the main part and a modal part both live in the main window.
-
-		const mruParts = this.mostRecentActiveParts;
-		const mruDocumentParts = mruParts.filter(part => part.element?.ownerDocument === document);
-		if (mruDocumentParts.length > 1) {
-			// First try to find the part that has the currently focused element, which is the most likely candidate to be the active part for that document.
+		if (this._parts.size > 1) {
 			const activeElement = getActiveElement();
-			for (const part of mruDocumentParts) {
-				const container = part.getContainer();
-				if (container && isAncestor(activeElement, container)) {
-					return part;
+
+			// Find parts that match the document and check if any
+			// non-main part contains the active element. This handles
+			// modal parts that share the same document as the main part.
+
+			for (const part of this._parts) {
+				if (part !== this.mainPart && part.element?.ownerDocument === document) {
+					const container = part.getContainer();
+					if (container && isAncestor(activeElement, container)) {
+						return part;
+					}
 				}
 			}
-
-			// Pick the part that was set active last for that document
-			return mruDocumentParts[0];
 		}
 
 		return super.getPartByDocument(document);

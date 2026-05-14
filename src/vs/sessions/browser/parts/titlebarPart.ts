@@ -29,7 +29,6 @@ import { IEditorGroupsContainer } from '../../../workbench/services/editor/commo
 import { CodeWindow, mainWindow } from '../../../base/browser/window.js';
 import { safeIntl } from '../../../base/common/date.js';
 import { ITitlebarPart, ITitleProperties, ITitleVariable, IAuxiliaryTitlebarPart } from '../../../workbench/browser/parts/titlebar/titlebarPart.js';
-import { WindowTitle } from '../../../workbench/browser/parts/titlebar/windowTitle.js';
 import { Menus } from '../menus.js';
 import { IsNewChatSessionContext } from '../../common/contextkeys.js';
 
@@ -76,8 +75,8 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 
 	//#endregion
 
-	protected rootContainer!: HTMLElement;
-	protected windowControlsContainer: HTMLElement | undefined;
+	private rootContainer!: HTMLElement;
+	private windowControlsContainer: HTMLElement | undefined;
 
 	private leftContent!: HTMLElement;
 	private leftToolbarContainer!: HTMLElement;
@@ -272,7 +271,7 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 		}
 	}
 
-	protected onContextMenu(e: MouseEvent): void {
+	private onContextMenu(e: MouseEvent): void {
 		const event = new StandardMouseEvent(getWindow(this.element), e);
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => event,
@@ -472,18 +471,6 @@ export class TitleService extends MultiWindowParts<TitlebarPart> implements ITit
 		for (const part of this.parts) {
 			part.registerVariables(variables);
 		}
-	}
-
-	private _windowTitle: WindowTitle | undefined;
-
-	get windowTitle(): WindowTitle {
-		// The Agents window title bar does not render `window.title`, so we
-		// lazily construct a `WindowTitle` only when a consumer (e.g. a custom
-		// command center widget) actually asks for one.
-		if (!this._windowTitle) {
-			this._windowTitle = this._register(this.instantiationService.createInstance(WindowTitle, mainWindow));
-		}
-		return this._windowTitle;
 	}
 
 	//#endregion

@@ -4,7 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { ILogService } from '../../log/common/log.js';
-import { createRemoteAgentHostState, parseRemoteAgentHostState } from '../common/remoteAgentHostMetadata.js';
 
 const LOG_PREFIX = '[SSHRemoteAgentHost]';
 
@@ -76,21 +75,36 @@ export function redactToken(text: string): string {
 	return text.replace(/\?tkn=[^\s&]+/g, '?tkn=***');
 }
 
+/** Path to our state file on the remote, recording the agent host's PID/port/token. */
+export function getAgentHostStateFile(quality: string): string {
+	return `${getRemoteCLIDir(quality)}/.agent-host-state`;
+}
+
+export interface AgentHostState {
+	readonly pid: number;
+	readonly port: number;
+	readonly connectionToken: string | null;
+}
+
 /**
- * Path to the per-quality agent host lockfile written by `code agent host`.
- *
- * Mirrors the Rust CLI's launcher path layout (see
- * `cli/src/state.rs::agent_host_root`). The Rust CLI anchors the agent host
- * lockfile on `serverDataFolderName` (exposed to the CLI build as
- * `VSCODE_CLI_SERVER_DATA_FOLDER_NAME`, derived from
- * `IProductConfiguration.serverDataFolderName`) so a `code agent host`
- * started locally and the supervisor spawned by the SSH `command-shell`
- * path agree on the same lockfile regardless of `--cli-data-dir`.
+ * Validate that a parsed object conforms to the AgentHostState shape.
+ * Returns the validated state or undefined if the shape is invalid.
  */
-export function getAgentHostLockfile(serverDataFolderName: string, quality: string): string {
-	const d = validateShellToken(serverDataFolderName, 'server data folder name');
-	const q = validateShellToken(quality, 'quality');
-	return `~/${d}/cli/agent-host-${q}.lock`;
+function parseAgentHostState(raw: unknown): AgentHostState | undefined {
+	if (typeof raw !== 'object' || raw === null) {
+		return undefined;
+	}
+	const obj = raw as Record<string, unknown>;
+	if (typeof obj.pid !== 'number' || !Number.isSafeInteger(obj.pid) || obj.pid <= 0) {
+		return undefined;
+	}
+	if (typeof obj.port !== 'number' || !Number.isSafeInteger(obj.port) || obj.port <= 0 || obj.port > 65535) {
+		return undefined;
+	}
+	if (obj.connectionToken !== null && typeof obj.connectionToken !== 'string') {
+		return undefined;
+	}
+	return { pid: obj.pid, port: obj.port, connectionToken: obj.connectionToken as string | null };
 }
 
 /**
@@ -100,37 +114,31 @@ export interface ISshExec {
 	(command: string, opts?: { ignoreExitCode?: boolean }): Promise<{ stdout: string; stderr: string; code: number }>;
 }
 
-export type FindRunningAgentHostResult =
-	| { readonly kind: 'notFound' }
-	| { readonly kind: 'compatible'; readonly host: string; readonly port: number; readonly connectionToken: string | undefined };
-
 /**
- * Try to find a running agent host on the remote by reading the lockfile and
+ * Try to find a running agent host on the remote by reading our state file and
  * verifying the recorded PID is still alive.
  */
 export async function findRunningAgentHost(
 	exec: ISshExec,
 	logService: ILogService,
-	serverDataFolderName: string,
 	quality: string,
-): Promise<FindRunningAgentHostResult> {
-	const stateFile = getAgentHostLockfile(serverDataFolderName, quality);
+): Promise<{ port: number; connectionToken: string | undefined } | undefined> {
+	const stateFile = getAgentHostStateFile(quality);
 	const { stdout, code } = await exec(`cat ${stateFile} 2>/dev/null`, { ignoreExitCode: true });
 	if (code !== 0 || !stdout.trim()) {
-		return { kind: 'notFound' };
+		return undefined;
 	}
 
-	let parsed: unknown;
+	let state: AgentHostState | undefined;
 	try {
-		parsed = JSON.parse(stdout.trim());
+		state = parseAgentHostState(JSON.parse(stdout.trim()));
 	} catch {
 		// fall through
 	}
-	const state = parseRemoteAgentHostState(parsed);
 	if (!state) {
 		logService.info(`${LOG_PREFIX} Invalid agent host state file ${stateFile}, removing`);
 		await exec(`rm -f ${stateFile}`, { ignoreExitCode: true });
-		return { kind: 'notFound' };
+		return undefined;
 	}
 
 	// Verify the PID is still alive
@@ -138,50 +146,20 @@ export async function findRunningAgentHost(
 	if (killCode !== 0) {
 		logService.info(`${LOG_PREFIX} Stale agent host state in ${stateFile} (PID ${state.pid} not running), cleaning up`);
 		await exec(`rm -f ${stateFile}`, { ignoreExitCode: true });
-		return { kind: 'notFound' };
+		return undefined;
 	}
 
-	// We deliberately do not gate on `protocolVersion` here: the remote
-	// agent host server is downloaded on demand and may speak a newer
-	// protocol than this desktop was built with. The renderer↔AH
-	// handshake will surface a real incompatibility; for the SSH-side
-	// reuse decision we treat any live process as a candidate, and the
-	// caller (sshRemoteAgentHostService) already falls back to spawning
-	// fresh if the relay fails to connect.
 	logService.info(`${LOG_PREFIX} Found running agent host via ${stateFile}: PID ${state.pid}, port ${state.port}`);
-	return {
-		kind: 'compatible',
-		host: dialAgentHostHost(state.host),
-		port: state.port,
-		connectionToken: state.connectionToken ?? undefined,
-	};
+	return { port: state.port, connectionToken: state.connectionToken ?? undefined };
 }
 
 /**
- * Map a recorded `host` value from the agent host lockfile to a dialable
- * loopback address. The supervisor records the literal `--host` value it
- * was given (e.g. `0.0.0.0`, `::1`, `localhost`); local callers (SSH
- * relay, tunnel reuse-forward, renderer bridge) want a target they can
- * actually open a socket to. Wildcards are mapped to their corresponding
- * loopback; specific hosts pass through unchanged. Missing `host`
- * (lockfile written by an older CLI) falls back to IPv4 loopback to
- * preserve the prior behaviour.
- */
-export function dialAgentHostHost(bound: string | undefined): string {
-	if (!bound || bound === '0.0.0.0' || bound === '::' || bound === '[::]') {
-		return '127.0.0.1';
-	}
-	return bound;
-}
-
-/**
- * After starting an agent host, record its PID/port/token in the lockfile on
+ * After starting an agent host, record its PID/port/token in a state file on
  * the remote so that future connections can reuse the process.
  */
 export async function writeAgentHostState(
 	exec: ISshExec,
 	logService: ILogService,
-	serverDataFolderName: string,
 	quality: string,
 	pid: number | undefined,
 	port: number,
@@ -192,15 +170,15 @@ export async function writeAgentHostState(
 		return;
 	}
 
-	const stateFile = getAgentHostLockfile(serverDataFolderName, quality);
-	const state = createRemoteAgentHostState({ pid, port, connectionToken, quality });
+	const stateFile = getAgentHostStateFile(quality);
+	const state: AgentHostState = { pid, port, connectionToken: connectionToken ?? null };
 	const json = JSON.stringify(state);
 	// Remove any existing file first so `>` creates a fresh inode with the
 	// new umask (overwriting an existing file preserves its old permissions).
 	// Use a subshell with restrictive umask (077) so the file is created with
 	// owner-only permissions (0600), protecting the connection token.
 	// The CLI itself stores its token file with the same permissions.
-	const result = await exec(`mkdir -p $(dirname ${stateFile}) && rm -f ${stateFile} && (umask 077 && printf %s ${shellEscape(json)} > ${stateFile})`, { ignoreExitCode: true });
+	const result = await exec(`rm -f ${stateFile} && (umask 077 && echo ${shellEscape(json)} > ${stateFile})`, { ignoreExitCode: true });
 	if (result.code !== 0) {
 		logService.warn(`${LOG_PREFIX} Failed to write agent host state to ${stateFile} (exit code ${result.code})${result.stderr ? `: ${result.stderr.trim()}` : ''}`);
 		return;
@@ -209,20 +187,19 @@ export async function writeAgentHostState(
 }
 
 /**
- * Kill a remote agent host tracked by our lockfile and remove the lockfile.
+ * Kill a remote agent host tracked by our state file and remove the state file.
  */
 export async function cleanupRemoteAgentHost(
 	exec: ISshExec,
 	logService: ILogService,
-	serverDataFolderName: string,
 	quality: string,
 ): Promise<void> {
-	const stateFile = getAgentHostLockfile(serverDataFolderName, quality);
+	const stateFile = getAgentHostStateFile(quality);
 	const { stdout, code } = await exec(`cat ${stateFile} 2>/dev/null`, { ignoreExitCode: true });
 	if (code === 0 && stdout.trim()) {
-		let state: { readonly pid: number } | undefined;
+		let state: AgentHostState | undefined;
 		try {
-			state = parseRemoteAgentHostState(JSON.parse(stdout.trim()));
+			state = parseAgentHostState(JSON.parse(stdout.trim()));
 		} catch { /* ignore parse errors */ }
 		if (state) {
 			logService.info(`${LOG_PREFIX} Killing remote agent host PID ${state.pid} (from ${stateFile})`);

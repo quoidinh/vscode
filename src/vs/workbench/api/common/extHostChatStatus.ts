@@ -30,7 +30,6 @@ export class ExtHostChatStatus {
 			title: '',
 			description: '',
 			detail: '',
-			tooltip: undefined,
 		};
 
 		let disposed = false;
@@ -71,14 +70,6 @@ export class ExtHostChatStatus {
 			},
 			set detail(value: string | undefined) {
 				state.detail = value;
-				syncState();
-			},
-
-			get tooltip(): string | undefined {
-				return state.tooltip;
-			},
-			set tooltip(value: string | undefined) {
-				state.tooltip = value;
 				syncState();
 			},
 

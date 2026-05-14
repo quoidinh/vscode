@@ -5,7 +5,6 @@
 
 import type MarkdownIt from 'markdown-it';
 import * as vscode from 'vscode';
-import { extendMarkdownIt as extendMarkdownItWithFrontMatter } from './extensions/yamlPreamble/yamlPreamble';
 import { ILogger } from './logging';
 import { MarkdownContributionProvider } from './markdownExtensions';
 import { MarkdownPreviewConfiguration } from './preview/previewConfig';
@@ -145,7 +144,20 @@ export class MarkdownItEngine implements IMdParser {
 					}
 				}
 
-				md = extendMarkdownItWithFrontMatter(md);
+				const frontMatterPlugin = await import('markdown-it-front-matter');
+				// Extract rules from front matter plugin and apply at a lower precedence
+				let fontMatterRule: any;
+				frontMatterPlugin.default({
+					block: {
+						ruler: {
+							before: (_id: any, _id2: any, rule: any) => { fontMatterRule = rule; }
+						}
+					}
+				}, () => { /* noop */ });
+
+				md.block.ruler.before('fence', 'front_matter', fontMatterRule, {
+					alt: ['paragraph', 'reference', 'blockquote', 'list']
+				});
 
 				this.#addImageRenderer(md);
 				this.#addFencedRenderer(md);

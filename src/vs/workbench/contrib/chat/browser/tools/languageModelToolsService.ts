@@ -48,7 +48,6 @@ import { IChatModel, IChatRequestModel } from '../../common/model/chatModel.js';
 import { ChatToolInvocation } from '../../common/model/chatProgressTypes/chatToolInvocation.js';
 import { chatSessionResourceToId, getChatSessionType } from '../../common/model/chatUri.js';
 import { HookType } from '../../common/promptSyntax/hookTypes.js';
-import { CopilotChatSettingId, CopilotToolId } from '../../common/tools/copilotToolIds.js';
 import { ILanguageModelToolsConfirmationService } from '../../common/tools/languageModelToolsConfirmationService.js';
 import { CountTokensCallback, createToolSchemaUri, IBeginToolCallOptions, IExternalPreToolUseHookResult, ILanguageModelToolsService, IPreparedToolInvocation, isToolSet, IToolAndToolSetEnablementMap, IToolData, IToolImpl, IToolInvocation, IToolInvokedEvent, IToolResult, IToolResultInputOutputDetails, IToolSet, SpecedToolAliases, stringifyPromptTsxPart, ToolDataSource, ToolInvocationPresentation, toolMatchesModel, ToolSet, ToolSetForModel, VSCodeToolReference } from '../../common/tools/languageModelToolsService.js';
 import { IToolResultCompressor } from '../../common/tools/toolResultCompressor.js';
@@ -152,7 +151,7 @@ export class LanguageModelToolsService extends Disposable implements ILanguageMo
 		}));
 
 		this._register(this._configurationService.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration(ChatConfiguration.ExtensionToolsEnabled) || e.affectsConfiguration(ChatConfiguration.AgentEnabled) || e.affectsConfiguration(CopilotChatSettingId.Gpt55ReadFileToolEnabled)) {
+			if (e.affectsConfiguration(ChatConfiguration.ExtensionToolsEnabled) || e.affectsConfiguration(ChatConfiguration.AgentEnabled)) {
 				this._onDidChangeToolsScheduler.schedule();
 			}
 		}));
@@ -211,18 +210,6 @@ export class LanguageModelToolsService extends Disposable implements ILanguageMo
 				description: localize('copilot.toolSet.agent.description', 'Delegate tasks to other agents'),
 			}
 		));
-	}
-
-	private isToolEnabledForModel(toolData: IToolData, model: ILanguageModelChatMetadata | undefined): boolean {
-		if (!toolMatchesModel(toolData, model)) {
-			return false;
-		}
-
-		if (toolData.id === CopilotToolId.ReadFile && model?.family.startsWith('gpt-5.5') && this._configurationService.getValue<boolean>(CopilotChatSettingId.Gpt55ReadFileToolEnabled) === false) {
-			return false;
-		}
-
-		return true;
 	}
 
 	/**
@@ -353,7 +340,7 @@ export class LanguageModelToolsService extends Disposable implements ILanguageMo
 				const satisfiesWhenClause = !toolData.when || this._contextKeyService.contextMatchesRules(toolData.when);
 				const satisfiesExternalToolCheck = toolData.source.type !== 'extension' || !!extensionToolsEnabled;
 				const satisfiesPermittedCheck = this.isPermitted(toolData);
-				const satisfiesModelFilter = this.isToolEnabledForModel(toolData, model);
+				const satisfiesModelFilter = toolMatchesModel(toolData, model);
 				return satisfiesWhenClause && satisfiesExternalToolCheck && satisfiesPermittedCheck && satisfiesModelFilter;
 			});
 	}
@@ -1449,7 +1436,7 @@ export class LanguageModelToolsService extends Disposable implements ILanguageMo
 					}
 				}
 			} else {
-				if (!this.isToolEnabledForModel(tool, model)) {
+				if (model && !toolMatchesModel(tool, model)) {
 					continue;
 				}
 
@@ -1529,7 +1516,7 @@ export class LanguageModelToolsService extends Disposable implements ILanguageMo
 			return this.toolSets.read(reader);
 		}
 
-		return Iterable.map(this.toolSets.read(reader), ts => new ToolSetForModel(ts, model, toolData => this.isToolEnabledForModel(toolData, model)));
+		return Iterable.map(this.toolSets.read(reader), ts => new ToolSetForModel(ts, model));
 	}
 
 	getToolSet(id: string): ToolSet | undefined {
