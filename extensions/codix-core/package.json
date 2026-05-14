@@ -78,7 +78,7 @@
     ]
   },
   "dependencies": {
-    "@codix/sdk": "file:../../../packages/sdk-ts"
+    "@codix/sdk": "file:/Users/mac/github/codix/packages/sdk-ts"
   },
   "devDependencies": {
     "@types/vscode": "^1.80.0",
