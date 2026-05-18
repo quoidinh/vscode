@@ -8,12 +8,17 @@
 /* eslint-disable */
 
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { OrchestratorClient } from '@codix/sdk';
+import { LocalAgent } from './LocalAgent';
 
 export class CodixViewProvider implements vscode.WebviewViewProvider {
 	public static readonly viewType = 'codix.chatView';
 	private _view?: vscode.WebviewView;
 	private _client?: OrchestratorClient;
+	private _agents: Map<string, LocalAgent> = new Map();
+	private _messageHandler?: (message: any) => void;
+	private _isAuthenticated: boolean = false;
 
 	constructor(private readonly _context: vscode.ExtensionContext) {
 		try {
@@ -21,6 +26,51 @@ export class CodixViewProvider implements vscode.WebviewViewProvider {
 			this._client = new OrchestratorClient(aiAddress);
 		} catch (e: any) {
 			console.warn('[CodixView] OrchestratorClient unavailable (gRPC not loaded):', e.message);
+		}
+	}
+
+	public setAuthState(isAuthenticated: boolean, token?: string) {
+		this._isAuthenticated = isAuthenticated;
+		if (this._view) {
+			this._view.webview.postMessage({ type: 'auth_state_changed', isAuthenticated, token });
+		}
+	}
+
+	public setUserInfo(name: string, avatar: string | null, isAuthenticated: boolean) {
+		if (this._view) {
+			this._view.webview.postMessage({ type: 'userInfo', name, avatar, isAuthenticated });
+		}
+	}
+
+	public setMessageHandler(handler: (message: any) => void) {
+		this._messageHandler = handler;
+	}
+
+	public getAgent(sessionId: string = 'default'): LocalAgent | undefined {
+		return this._agents.get(sessionId);
+	}
+
+	public syncWorkspace(path: string) {
+		if (this._view) {
+			this._view.webview.postMessage({ type: 'syncWorkspace', path: path });
+		}
+	}
+
+	public updateOpenFiles(fileNames: any[]) {
+		if (this._view) {
+			this._view.webview.postMessage({ type: 'updateOpenFiles', fileNames: fileNames });
+		}
+	}
+
+	public addContextToChat(contextText: string) {
+		if (this._view) {
+			this._view.webview.postMessage({ type: 'addContext', text: contextText });
+		}
+	}
+
+	public sendSearchResults(results: any[]) {
+		if (this._view) {
+			this._view.webview.postMessage({ type: 'search_results', results: results });
 		}
 	}
 
@@ -39,6 +89,10 @@ export class CodixViewProvider implements vscode.WebviewViewProvider {
 		webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
 		webviewView.webview.onDidReceiveMessage(async (message) => {
+			if (this._messageHandler) {
+				this._messageHandler(message);
+			}
+
 			switch (message.type) {
 				case 'executeIntent':
 					await this._handleRealAction(message.text, message.model || 'cloud', message.providerConfig);
@@ -48,29 +102,28 @@ export class CodixViewProvider implements vscode.WebviewViewProvider {
 					this._context.globalState.update('codix_llm_settings', message.settings);
 					console.log('[Codix] LLM settings synced to extension globalState');
 					break;
-				case 'executeLocalTool':
-					if (message.toolName === 'fetch') {
-						try {
-							const fetch = (await import('node-fetch')).default;
-							const res = await fetch(message.args.url, {
-								method: message.args.method || 'GET',
-								headers: message.args.headers || {}
-							});
-							const data = await res.json();
-							webviewView.webview.postMessage({
-								type: 'toolResult',
-								requestId: message.requestId,
-								result: { body: data }
-							});
-						} catch (e: any) {
-							webviewView.webview.postMessage({
-								type: 'toolResult',
-								requestId: message.requestId,
-								result: { error: e.message }
-							});
-						}
+				case 'syncSettings': {
+					const syncSessionId = message.sessionId || 'default';
+					let syncAgent = this._agents.get(syncSessionId);
+					if (!syncAgent) {
+						syncAgent = new LocalAgent(webviewView.webview, syncSessionId);
+						this._agents.set(syncSessionId, syncAgent);
 					}
+					syncAgent.updateSettings(message.settings);
+					console.log('[CodixView] Settings synced to LocalAgent');
 					break;
+				}
+				case 'executeLocalTool': {
+					console.log(`[CodixViewProvider] Received Tool Request: ${message.toolName}`);
+					const sessionId = message.sessionId || 'default';
+					let agent = this._agents.get(sessionId);
+					if (!agent) {
+						agent = new LocalAgent(webviewView.webview, sessionId);
+						this._agents.set(sessionId, agent);
+					}
+					agent.execute(message.toolName, message.args, message.requestId);
+					break;
+				}
 				case 'uploadMedia':
 					vscode.window.showOpenDialog({
 						canSelectFiles: true,
@@ -121,7 +174,7 @@ export class CodixViewProvider implements vscode.WebviewViewProvider {
 			// Bước 2: Gọi LLM trực tiếp dựa trên providerConfig
 			let responseData: any;
 
-			if (providerConfig && providerConfig.apiKey) {
+			if (providerConfig && (providerConfig.apiKey || providerConfig.type === 'ollama' || providerConfig.providerName === 'ollama' || providerConfig.apiUrl)) {
 				// Gọi LLM trực tiếp từ Extension Host
 				responseData = await this._callLLMDirect(text, contextSnippet, providerConfig);
 			} else if (model === 'local') {
@@ -145,6 +198,71 @@ export class CodixViewProvider implements vscode.WebviewViewProvider {
 				if (jsonMatch && jsonMatch[1]) {
 					try { operations = JSON.parse(jsonMatch[1]); } catch(e) {}
 				}
+			}
+
+			// Tự động trích xuất các code block trong phản hồi để ghi ra file hoặc mở Untitled Document
+			try {
+				const workspaceFolders = vscode.workspace.workspaceFolders;
+				const codeBlockRegex = /```([a-zA-Z0-9+#-]+)?\n([\s\S]*?)\n```/g;
+				let match;
+				
+				while ((match = codeBlockRegex.exec(aiMessage)) !== null) {
+					const lang = (match[1] || 'txt').toLowerCase();
+					if (lang === 'json') continue; // Bỏ qua block json operations
+					let code = match[2];
+					
+					// Xác định tên file
+					let fileName = '';
+					
+					// 1. Tìm comment ghi chú tên file ở dòng đầu tiên hoặc dòng thứ hai
+					const fileCommentMatch = code.match(/(?:\/\/|\/\*|#|<!--)\s*(?:target:|file:|filepath:)\s*([a-zA-Z0-9_\-\.\/]+)/i);
+					if (fileCommentMatch && fileCommentMatch[1]) {
+						fileName = fileCommentMatch[1].trim();
+					} else {
+						// 2. Tự suy luận dựa trên ngôn ngữ
+						switch (lang) {
+							case 'go': case 'golang': fileName = 'main.go'; break;
+							case 'html': fileName = 'index.html'; break;
+							case 'js': case 'javascript': fileName = 'index.js'; break;
+							case 'ts': case 'typescript': fileName = 'index.ts'; break;
+							case 'py': case 'python': fileName = 'main.py'; break;
+							case 'css': fileName = 'styles.css'; break;
+							case 'sh': case 'bash': fileName = 'run.sh'; break;
+							case 'php': fileName = 'index.php'; break;
+							default: fileName = 'output.' + lang; break;
+						}
+					}
+					
+					if (fileName) {
+						if (workspaceFolders && workspaceFolders.length > 0) {
+							// Có Workspace đang mở -> Ghi vào file thực tế
+							const wsRoot = workspaceFolders[0].uri.fsPath;
+							const filePath = path.join(wsRoot, fileName);
+							const fileUri = vscode.Uri.file(filePath);
+							
+							const parentDir = path.dirname(filePath);
+							await vscode.workspace.fs.createDirectory(vscode.Uri.file(parentDir));
+							await vscode.workspace.fs.writeFile(fileUri, Buffer.from(code, 'utf8'));
+							
+							const doc = await vscode.workspace.openTextDocument(fileUri);
+							await vscode.window.showTextDocument(doc);
+							vscode.window.showInformationMessage(`Đã tự động tạo và lưu mã nguồn vào file: ${fileName}`);
+						} else {
+							// Không có Workspace đang mở -> Tạo Untitled Document tạm thời
+							let docLang = lang;
+							if (lang === 'golang') docLang = 'go';
+							
+							const doc = await vscode.workspace.openTextDocument({
+								language: docLang,
+								content: code
+							});
+							await vscode.window.showTextDocument(doc);
+							vscode.window.showInformationMessage(`Vì chưa mở thư mục Workspace, Codix đã mở tài liệu tạm thời chứa mã nguồn ${fileName}!`);
+						}
+					}
+				}
+			} catch (writeErr) {
+				console.error("[Codix] Auto-write code block error:", writeErr);
 			}
 
 			tasks[2].status = 'completed';
@@ -322,7 +440,7 @@ Khi nhận yêu cầu chỉnh sửa video, hãy trả về JSON operations nếu
 	}
 
 	private _getHtmlForWebview(webview: vscode.Webview) {
-		const bridgeUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'bridge.js'));
+		const socketIoUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'socket.io.min.js'));
 		const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'main.js'));
 		const styleMainUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'main.css'));
 		const markedUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'marked.min.js'));
@@ -582,7 +700,7 @@ Khi nhận yêu cầu chỉnh sửa video, hãy trả về JSON operations nếu
 				</script>
 				<script src="${markedUri}"></script>
 				<script src="${prismJsUri}"></script>
-				<script src="${bridgeUri}"></script>
+				<script src="${socketIoUri}"></script>
 				<script src="${scriptUri}"></script>
 			</body>
 			</html>`;

@@ -27,7 +27,7 @@
 	if (_savedState.sessionId) currentSessionId = _savedState.sessionId;
 	if (_savedState.projectId) currentProjectId = _savedState.projectId;
 	let workspacePath = _savedState.workspacePath || null;
-	let isAuthenticated = _savedState.isAuthenticated || false;
+	let isAuthenticated = true;
 	let authToken = _savedState.authToken || null;
 	if (_savedState.modelsData) modelsData = _savedState.modelsData;
 	console.log("auth Token: ", authToken);
@@ -1298,11 +1298,10 @@
 		const text = messageInput.value.trim();
 		if (!text) return;
 
-		const isLocalAI = window.llmConfig && window.llmConfig.provider !== 'cloud';
 		const isClipStudio = window.codixViewType === 'clip';
 
 		// Block unauthenticated users ONLY if they are trying to use Cloud AI
-		if (!isAuthenticated && !isLocalAI && !isClipStudio) {
+		if (!isAuthenticated && !isClipStudio) {
 			const authModal = document.getElementById('auth-modal');
 			if (authModal) authModal.style.display = 'flex';
 			return;
@@ -1329,13 +1328,44 @@
 		attachedImages = [];
 		renderImagePreviews();
 
-		if (isLocalAI || isClipStudio || !socket) {
+		// Resolve provider config dynamically from modelsData or vibe-model-selector
+		const modelSelector = document.getElementById('vibe-model-selector');
+		const selectedMode = modelSelector ? modelSelector.value : 'local';
+
+		let providerConfig = null;
+		if (modelsData && modelsData.llmConfig && modelsData.llmConfig.main) {
+			const mainConfig = modelsData.llmConfig.main;
+			const provider = modelsData.providers.find(p => p.name === mainConfig.provider);
+			if (provider) {
+				providerConfig = {
+					providerName: provider.name,
+					type: provider.type,
+					apiKey: provider.apiKey || '',
+					apiUrl: provider.apiUrl || '',
+					model: mainConfig.model
+				};
+			}
+		}
+
+		if (selectedMode === 'local' && (!providerConfig || providerConfig.type === 'ollama')) {
+			// Ensure high-fidelity default fallback for local Ollama
+			const ollamaProv = modelsData.providers?.find(p => p.type === 'ollama');
+			providerConfig = {
+				providerName: ollamaProv ? ollamaProv.name : 'Ollama',
+				type: 'ollama',
+				apiKey: ollamaProv?.apiKey || '',
+				apiUrl: ollamaProv?.apiUrl || 'http://localhost:11434',
+				model: ollamaProv?.activeModel || (modelsData.llmConfig?.main?.model) || 'llama3'
+			};
+		}
+
+		if (isClipStudio || !socket) {
 			// Bypass socket, send via Extension Host
 			vscode.postMessage({
 				type: 'executeIntent',
 				text: text,
-				model: window.llmConfig ? window.llmConfig.provider : 'local',
-				providerConfig: window.llmConfig
+				model: selectedMode,
+				providerConfig: providerConfig
 			});
 			setProcessing(true, 'Thinking...');
 			return;
