@@ -7,15 +7,45 @@
 
 /* eslint-disable */
 
-// Codix gRPC to Legacy Socket Bridge
-// Đóng vai trò cầu nối giữa giao diện cũ (Socket.io) và backend mới (gRPC)
+// Codix Bridge: Kết nối giao diện chat với Extension Host
+// Hỗ trợ gửi provider config (type, apiKey, apiUrl, model) kèm theo mỗi message
 
 (function () {
-	console.log("[Codix Bridge] Initializing Compatibility Layer...");
+	console.log("[Codix Bridge] Initializing...");
 
-	const vscode = window.vscode; // Sử dụng instance đã được khởi tạo
+	const vscode = window.vscode;
 
-	// Giả lập đối tượng Socket.io mà main.js mong muốn
+	// Helper: Lấy provider config đã lưu từ localStorage
+	function getActiveProviderConfig() {
+		try {
+			const savedStr = localStorage.getItem('codix_llm_settings');
+			if (!savedStr) return null;
+			const saved = JSON.parse(savedStr);
+			const llmConfig = saved.llmConfig || {};
+			const mainConfig = llmConfig.main || {};
+			const providerName = mainConfig.provider || '';
+			const model = mainConfig.model || '';
+
+			if (!providerName) return null;
+
+			// Tìm provider object để lấy apiKey, apiUrl
+			const providers = Array.isArray(saved.providers) ? saved.providers : [];
+			const provider = providers.find(p => p.name === providerName);
+
+			return {
+				providerName,
+				type: provider?.type || 'openai',
+				apiKey: provider?.options?.apiKey || '',
+				apiUrl: provider?.options?.apiUrl || '',
+				model
+			};
+		} catch (e) {
+			console.error('[Codix Bridge] Failed to read provider config:', e);
+			return null;
+		}
+	}
+
+	// Giả lập đối tượng Socket.io
 	const socketMock = {
 		connected: true,
 		id: 'codix-local-socket',
@@ -31,9 +61,30 @@
 			});
 		},
 		emit: function (event, data) {
-			console.log(`[Codix Bridge] Emitting ${event}:`, data);
+			console.log(`[Codix Bridge] Emitting ${event}`);
 			if (event === 'chat_message' || event === 'sendMessage') {
-				vscode.postMessage({ type: 'executeIntent', text: data.message || data.text });
+				const selector = document.getElementById('vibe-model-selector');
+				const model = selector ? selector.value : 'cloud';
+				const providerConfig = getActiveProviderConfig();
+
+				if (!providerConfig || !providerConfig.providerName) {
+					// Gửi thông báo lỗi nếu chưa cấu hình provider
+					window.dispatchEvent(new MessageEvent('message', {
+						data: {
+							type: 'response',
+							text: '⚠️ **Chưa cấu hình LLM Provider.**\n\nHãy nhấp vào biểu tượng **Settings (⚙️)** ở **góc trên cùng bên phải** → tab **Models** → thêm Provider (OpenAI, Ollama, v.v.) và chọn Model cho vai trò "Main".\n\nSau khi cấu hình xong, nhấn **Save Changes** rồi thử lại.',
+							model: model
+						}
+					}));
+					return;
+				}
+
+				vscode.postMessage({
+					type: 'executeIntent',
+					text: data.message || data.text,
+					model,
+					providerConfig
+				});
 			}
 		},
 		off: () => { },
@@ -42,17 +93,23 @@
 
 	// Override hàm io() toàn cục
 	window.io = function () {
-		console.log("[Codix Bridge] Socket.io intercepted. Using gRPC Bridge.");
+		console.log("[Codix Bridge] Socket.io intercepted.");
 		return socketMock;
 	};
 
 	// Mock initial data
-	window.addEventListener('load', () => {
-		// Gửi sự kiện giả lập để UI hiển thị trạng thái đã kết nối
+	const initMockData = () => {
 		setTimeout(() => {
 			window.dispatchEvent(new MessageEvent('message', {
 				data: { type: 'auth_state_changed', isAuthenticated: true, token: 'codix-local-token' }
 			}));
 		}, 500);
-	});
+	};
+
+	if (document.readyState === 'complete' || document.readyState === 'interactive') {
+		initMockData();
+	} else {
+		window.addEventListener('DOMContentLoaded', initMockData);
+		window.addEventListener('load', initMockData);
+	}
 })();

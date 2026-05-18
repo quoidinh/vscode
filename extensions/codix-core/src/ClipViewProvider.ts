@@ -16,7 +16,7 @@ export class ClipViewProvider implements vscode.WebviewViewProvider {
 	private _view?: vscode.WebviewView;
 	private _client: OrchestratorClient;
 
-	constructor(private readonly _extensionUri: vscode.Uri) {
+	constructor(private readonly _context: vscode.ExtensionContext) {
 		const aiAddress = process.env.CODIX_AI_ADDR || 'localhost:50051';
 		this._client = new OrchestratorClient(aiAddress);
 	}
@@ -30,7 +30,7 @@ export class ClipViewProvider implements vscode.WebviewViewProvider {
 
 		webviewView.webview.options = {
 			enableScripts: true,
-			localResourceRoots: [this._extensionUri]
+			localResourceRoots: [this._context.extensionUri]
 		};
 
 		webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
@@ -38,10 +38,38 @@ export class ClipViewProvider implements vscode.WebviewViewProvider {
 		webviewView.webview.onDidReceiveMessage(async (message) => {
 			switch (message.type) {
 				case 'openFullEditor':
-					ClipEditorPanel.createOrShow(this._extensionUri);
+					ClipEditorPanel.createOrShow(this._context.extensionUri);
 					break;
 				case 'executeIntent':
 					await this._handleClipAction(message.text);
+					break;
+				case 'saveLLMSettings':
+					// Persist LLM settings in extension globalState
+					this._context.globalState.update('codix_llm_settings', message.settings);
+					console.log('[Codix] LLM settings synced to extension globalState');
+					break;
+				case 'executeLocalTool':
+					if (message.toolName === 'fetch') {
+						try {
+							const fetch = (await import('node-fetch')).default;
+							const res = await fetch(message.args.url, {
+								method: message.args.method || 'GET',
+								headers: message.args.headers || {}
+							});
+							const data = await res.json();
+							webviewView.webview.postMessage({
+								type: 'toolResult',
+								requestId: message.requestId,
+								result: { body: data }
+							});
+						} catch (e: any) {
+							webviewView.webview.postMessage({
+								type: 'toolResult',
+								requestId: message.requestId,
+								result: { error: e.message }
+							});
+						}
+					}
 					break;
 			}
 		});
@@ -88,8 +116,10 @@ export class ClipViewProvider implements vscode.WebviewViewProvider {
 				<link rel="stylesheet" href="${styleMainUri}">
 				<link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
 				<style>
-					.studio-header { padding: 15px; background: rgba(168, 85, 247, 0.1); border-bottom: 1px solid rgba(255,255,255,0.05); text-align: center; }
+					.studio-header { padding: 15px; background: rgba(168, 85, 247, 0.1); border-bottom: 1px solid rgba(255,255,255,0.05); text-align: center; display: flex; flex-direction: column; position: relative; }
 					.btn-studio { width: 100%; background: linear-gradient(135deg, #A855F7, #3B82F6); color: white; border: none; padding: 10px; border-radius: 8px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 10px; }
+					.toolbar-icon-btn { color: #94A3B8; cursor: pointer; transition: color 0.2s; }
+					.toolbar-icon-btn:hover { color: #c9d1d9; }
 				</style>
 			</head>
 			<body class="authenticated">
@@ -98,7 +128,10 @@ export class ClipViewProvider implements vscode.WebviewViewProvider {
 						<button class="btn-studio" onclick="openFullEditor()">
 							<span class="material-icons">movie_filter</span> OPEN FULL STUDIO
 						</button>
-						<div style="font-size: 10px; color: #94A3B8;">Talk to AI to edit your clips</div>
+						<div style="display: flex; justify-content: space-between; align-items: center;">
+							<div style="font-size: 10px; color: #94A3B8;">Talk to AI to edit your clips</div>
+							<span id="open-settings-btn" class="material-icons toolbar-icon-btn" style="font-size: 16px;" title="Settings">settings</span>
+						</div>
 					</div>
 
 					<main id="view-container" style="flex: 1; overflow-y: auto;">
@@ -109,6 +142,7 @@ export class ClipViewProvider implements vscode.WebviewViewProvider {
 								</div>
 							</div>
 						</div>
+						<div id="feature-content" style="display: none; padding: 15px;"></div>
 					</main>
 
 					<footer>
@@ -127,12 +161,39 @@ export class ClipViewProvider implements vscode.WebviewViewProvider {
 							</div>
 						</div>
 					</footer>
+					
+					<!-- Shared Modal Overlay for Settings/Provider logic -->
+					<div id="modal-overlay" class="modal-overlay" style="display: none;">
+						<div class="modal-content"></div>
+					</div>
 				</div>
 
 				<script>
 					window.vscode = (window.vscode) ? window.vscode : acquireVsCodeApi();
 					const vscode = window.vscode;
 					function openFullEditor() { vscode.postMessage({ type: 'openFullEditor' }); }
+					
+					// Toggle Settings View
+					let showingSettings = false;
+					document.getElementById('open-settings-btn').addEventListener('click', () => {
+						const chatContainer = document.getElementById('chat-container');
+						const featureContent = document.getElementById('feature-content');
+						const btn = document.getElementById('open-settings-btn');
+						
+						showingSettings = !showingSettings;
+						if (showingSettings) {
+							chatContainer.style.display = 'none';
+							featureContent.style.display = 'block';
+							btn.style.color = '#A855F7'; // highlight
+							if (typeof window.renderSettings === 'function') {
+								window.renderSettings();
+							}
+						} else {
+							chatContainer.style.display = 'block';
+							featureContent.style.display = 'none';
+							btn.style.color = '#94A3B8'; // default
+						}
+					});
 				</script>
 				<script src="${bridgeUri}"></script>
 				<script src="${scriptUri}"></script>

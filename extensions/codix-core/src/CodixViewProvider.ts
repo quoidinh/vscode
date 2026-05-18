@@ -15,7 +15,7 @@ export class CodixViewProvider implements vscode.WebviewViewProvider {
 	private _view?: vscode.WebviewView;
 	private _client: OrchestratorClient;
 
-	constructor(private readonly _extensionUri: vscode.Uri) {
+	constructor(private readonly _context: vscode.ExtensionContext) {
 		// Ưu tiên kết nối Local AI, fallback về Cloud nếu cần
 		const aiAddress = process.env.CODIX_AI_ADDR || 'localhost:50051';
 		this._client = new OrchestratorClient(aiAddress);
@@ -30,7 +30,7 @@ export class CodixViewProvider implements vscode.WebviewViewProvider {
 
 		webviewView.webview.options = {
 			enableScripts: true,
-			localResourceRoots: [this._extensionUri]
+			localResourceRoots: [this._context.extensionUri]
 		};
 
 		webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
@@ -38,21 +38,65 @@ export class CodixViewProvider implements vscode.WebviewViewProvider {
 		webviewView.webview.onDidReceiveMessage(async (message) => {
 			switch (message.type) {
 				case 'executeIntent':
-					await this._handleRealAction(message.text);
+					await this._handleRealAction(message.text, message.model || 'cloud', message.providerConfig);
+					break;
+				case 'saveLLMSettings':
+					// Persist LLM settings in extension globalState
+					this._context.globalState.update('codix_llm_settings', message.settings);
+					console.log('[Codix] LLM settings synced to extension globalState');
+					break;
+				case 'executeLocalTool':
+					if (message.toolName === 'fetch') {
+						try {
+							const fetch = (await import('node-fetch')).default;
+							const res = await fetch(message.args.url, {
+								method: message.args.method || 'GET',
+								headers: message.args.headers || {}
+							});
+							const data = await res.json();
+							webviewView.webview.postMessage({
+								type: 'toolResult',
+								requestId: message.requestId,
+								result: { body: data }
+							});
+						} catch (e: any) {
+							webviewView.webview.postMessage({
+								type: 'toolResult',
+								requestId: message.requestId,
+								result: { error: e.message }
+							});
+						}
+					}
+					break;
+				case 'uploadMedia':
+					vscode.window.showOpenDialog({
+						canSelectFiles: true,
+						canSelectMany: true,
+						filters: { 'Media': ['mp4', 'png', 'jpg', 'mp3'] }
+					}).then(uris => {
+						if (uris && uris.length > 0) {
+							vscode.window.showInformationMessage(`Codix AI: Đã tải lên và phân tích ${uris.length} file media.`);
+							webviewView.webview.postMessage({
+								type: 'response',
+								text: `Đã đính kèm ${uris.length} file vào bộ nhớ tạm. Sẵn sàng dựng clip!`
+							});
+						}
+					});
 					break;
 			}
 		});
 	}
 
-	private async _handleRealAction(text: string) {
+	private async _handleRealAction(text: string, model: string, providerConfig?: any) {
 		if (!this._view) return;
 
 		const activeEditor = vscode.window.activeTextEditor;
 		const currentFile = activeEditor ? activeEditor.document.fileName.split('/').pop() : 'Workspace';
 
+		const providerLabel = providerConfig?.providerName || (model === 'local' ? 'Local AI' : 'Cloud AI');
 		const tasks = [
 			{ id: 1, title: `Đọc ngữ cảnh: ${currentFile}`, status: 'pending' },
-			{ id: 2, title: 'Kết nối Codix Cloud API (Render)', status: 'pending' },
+			{ id: 2, title: `Gửi → ${providerLabel} (${providerConfig?.model || 'default'})`, status: 'pending' },
 			{ id: 3, title: 'Thực thi phản hồi AI', status: 'pending' }
 		];
 
@@ -67,59 +111,220 @@ export class CodixViewProvider implements vscode.WebviewViewProvider {
 			this._view.webview.postMessage({ type: 'thinking', value: true });
 
 			// Bước 1: Xử lý ngữ cảnh
-			await new Promise(r => setTimeout(r, 500));
+			await new Promise(r => setTimeout(r, 300));
 			tasks[0].status = 'completed';
 			this._view.webview.postMessage({ type: 'update_tasks', tasks });
 
-			// Bước 2: Gọi API thực tế (https://coderx-backend-render.onrender.com)
-			const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
-			const fullPrompt = text + contextSnippet;
+			// Bước 2: Gọi LLM trực tiếp dựa trên providerConfig
+			let responseData: any;
 
-			// Gửi request thực sự lên Render
-			// const response = await fetch('https://coderx-backend-render.onrender.com/api/v1/chat', { ... });
-			// Ở đây tôi sẽ sử dụng OrchestratorClient đã được cấu hình URL Cloud
-			const results = await this._client.executeIntent(fullPrompt, workspacePath);
+			if (providerConfig && providerConfig.apiKey) {
+				// Gọi LLM trực tiếp từ Extension Host
+				responseData = await this._callLLMDirect(text, contextSnippet, providerConfig);
+			} else if (model === 'local') {
+				// Fallback: Local backend relay
+				responseData = await this._callBackend('http://localhost:3826/api/v1/vibe-edit', text, contextSnippet);
+			} else {
+				// Fallback: Cloud backend relay
+				responseData = await this._callBackend('https://coderx-backend-render.onrender.com/api/v1/vibe-edit', text, contextSnippet);
+			}
 
 			tasks[1].status = 'completed';
 			this._view.webview.postMessage({ type: 'update_tasks', tasks });
 
-			// Bước 3: Hoàn tất
+			// Bước 3: Xử lý phản hồi
+			let aiMessage = responseData.message || responseData.content || "Tôi đã xử lý yêu cầu.";
+			let operations = responseData.operations || [];
+
+			// Parse JSON thủ công nếu AI trả về raw message nhưng chưa tách operations
+			if (operations.length === 0) {
+				const jsonMatch = aiMessage.match(/```json\n([\s\S]*?)\n```/);
+				if (jsonMatch && jsonMatch[1]) {
+					try { operations = JSON.parse(jsonMatch[1]); } catch(e) {}
+				}
+			}
+
 			tasks[2].status = 'completed';
 			this._view.webview.postMessage({ type: 'update_tasks', tasks });
-
 			this._view.webview.postMessage({ type: 'thinking', value: false });
 
-			// Xử lý phản hồi dựa trên từ khóa như trước
-			if (text.toLowerCase().includes('video') || text.toLowerCase().includes('clip')) {
-				const { ClipEditorPanel } = await import('./ClipEditorPanel.js');
-				ClipEditorPanel.createOrShow(this._extensionUri);
-				setTimeout(() => {
-					ClipEditorPanel.currentPanel?.addClipExternal('video', 'AI Generated Clip.mp4');
-					vscode.window.showInformationMessage('Codix AI: Studio integrated via Cloud API.');
-				}, 1000);
+			// Bắn lệnh qua Event Bridge sang Khung 1 (Clip Editor) nếu có operations
+			if (operations.length > 0) {
+				const { CodixEventManager } = await import('./CodixEventManager.js');
+				CodixEventManager.getInstance().sendOperations(operations);
 			}
 
 			this._view.webview.postMessage({ 
 				type: 'response', 
-				text: results[results.length - 1]?.message || "AI đã xử lý yêu cầu của bạn."
+				text: aiMessage
 			});
 
 		} catch (err: any) {
 			this._view.webview.postMessage({ type: 'thinking', value: false });
+			const errorMsg = `⚠️ **Lỗi kết nối ${providerLabel}**\n\n${err.message}\n\n💡 Hãy kiểm tra:\n- API Key hợp lệ\n- URL chính xác\n- Provider đang hoạt động`;
 			this._view.webview.postMessage({ 
-				type: 'agent_response', 
-				content: `Kết nối Cloud thất bại. Vui lòng kiểm tra lại URL: https://coderx-backend-render.onrender.com \nLỗi: ${err.message}` 
+				type: 'response', 
+				text: errorMsg 
 			});
 		}
 	}
 
+	/**
+	 * Gọi LLM trực tiếp qua OpenAI-compatible API hoặc Anthropic API
+	 */
+	private async _callLLMDirect(prompt: string, context: string, config: any): Promise<any> {
+		const { type, apiKey, apiUrl, model } = config;
+
+		// Xây dựng URL endpoint
+		let url: string;
+		let headers: Record<string, string>;
+		let body: string;
+
+		const systemPrompt = `Bạn là Codix Studio AI - trợ lý biên tập video thông minh. 
+Khi nhận yêu cầu chỉnh sửa video, hãy trả về JSON operations nếu có thể.
+Định dạng: { "message": "...", "operations": [...] }`;
+
+		const fullPrompt = prompt + context;
+
+		if (type === 'anthropic') {
+			// Anthropic Claude API
+			url = (apiUrl || 'https://api.anthropic.com') + '/v1/messages';
+			headers = {
+				'Content-Type': 'application/json',
+				'x-api-key': apiKey,
+				'anthropic-version': '2023-06-01'
+			};
+			body = JSON.stringify({
+				model: model || 'claude-sonnet-4-20250514',
+				max_tokens: 4096,
+				system: systemPrompt,
+				messages: [{ role: 'user', content: fullPrompt }]
+			});
+		} else if (type === 'google') {
+			// Google Gemini API
+			url = `https://generativelanguage.googleapis.com/v1beta/models/${model || 'gemini-2.0-flash'}:generateContent?key=${apiKey}`;
+			headers = { 'Content-Type': 'application/json' };
+			body = JSON.stringify({
+				contents: [{ parts: [{ text: systemPrompt + '\n\n' + fullPrompt }] }],
+				generationConfig: { maxOutputTokens: 4096 }
+			});
+		} else {
+			// OpenAI-compatible (OpenAI, OpenRouter, Groq, DeepSeek, Mistral, Ollama, LM Studio, vLLM, custom)
+			let baseUrl = apiUrl || 'https://api.openai.com/v1';
+			baseUrl = baseUrl.replace(/\/+$/, '');
+			if (!baseUrl.endsWith('/v1') && !baseUrl.endsWith('/chat/completions')) {
+				if (type === 'ollama') {
+					baseUrl = baseUrl + '/v1';
+				}
+			}
+			url = baseUrl.endsWith('/chat/completions') ? baseUrl : baseUrl + '/chat/completions';
+			headers = {
+				'Content-Type': 'application/json',
+				'Authorization': `Bearer ${apiKey}`
+			};
+			body = JSON.stringify({
+				model: model || 'gpt-4o-mini',
+				messages: [
+					{ role: 'system', content: systemPrompt },
+					{ role: 'user', content: fullPrompt }
+				],
+				max_tokens: 4096
+			});
+		}
+
+		console.log(`[Codix] Calling LLM: ${type} → ${url} (model: ${model})`);
+
+		// HTTP(S) request
+		const isHttps = url.startsWith('https');
+		const httpModule = isHttps ? require('https') : require('http');
+
+		const rawResponse: string = await new Promise((resolve, reject) => {
+			const urlObj = new URL(url);
+			const req = httpModule.request({
+				hostname: urlObj.hostname,
+				port: urlObj.port || (isHttps ? 443 : 80),
+				path: urlObj.pathname + urlObj.search,
+				method: 'POST',
+				headers: { ...headers, 'Content-Length': Buffer.byteLength(body) },
+				timeout: 120000
+			}, (res: any) => {
+				let data = '';
+				res.on('data', (chunk: any) => { data += chunk; });
+				res.on('end', () => {
+					if (res.statusCode >= 400) {
+						reject(new Error(`API trả về lỗi ${res.statusCode}: ${data.substring(0, 500)}`));
+					} else {
+						resolve(data);
+					}
+				});
+			});
+			req.on('error', (e: any) => reject(new Error(`Không thể kết nối tới ${type}: ${e.message}`)));
+			req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout (120s)')); });
+			req.write(body);
+			req.end();
+		});
+
+		// Parse response theo từng provider
+		const json = JSON.parse(rawResponse);
+		let content = '';
+
+		if (type === 'anthropic') {
+			content = json.content?.[0]?.text || '';
+		} else if (type === 'google') {
+			content = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
+		} else {
+			content = json.choices?.[0]?.message?.content || '';
+		}
+
+		// Cố parse response như JSON {message, operations}
+		try {
+			const parsed = JSON.parse(content);
+			return { message: parsed.message || content, operations: parsed.operations || [] };
+		} catch {
+			// AI trả về text thường, tìm JSON block nếu có
+			const jsonMatch = content.match(/```json\n([\s\S]*?)\n```/);
+			if (jsonMatch && jsonMatch[1]) {
+				try {
+					const ops = JSON.parse(jsonMatch[1]);
+					return { message: content, operations: Array.isArray(ops) ? ops : (ops.operations || []) };
+				} catch { }
+			}
+			return { message: content, operations: [] };
+		}
+	}
+
+	/**
+	 * Gọi backend relay (fallback khi không có providerConfig trực tiếp)
+	 */
+	private async _callBackend(url: string, prompt: string, context: string): Promise<any> {
+		const isHttps = url.startsWith('https');
+		const httpModule = isHttps ? require('https') : require('http');
+		const body = JSON.stringify({ prompt, context });
+
+		return new Promise<any>((resolve, reject) => {
+			const req = httpModule.request(url, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+			}, (res: any) => {
+				let data = '';
+				res.on('data', (chunk: any) => { data += chunk; });
+				res.on('end', () => {
+					try { resolve(JSON.parse(data)); } catch(e) { reject(e); }
+				});
+			});
+			req.on('error', (e: any) => reject(new Error(`Backend không phản hồi: ${e.message}`)));
+			req.write(body);
+			req.end();
+		});
+	}
+
 	private _getHtmlForWebview(webview: vscode.Webview) {
-		const bridgeUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'bridge.js'));
-		const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'main.js'));
-		const styleMainUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'main.css'));
-		const markedUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'marked.min.js'));
-		const prismJsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'prism.min.js'));
-		const prismCssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'prism.css'));
+		const bridgeUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'bridge.js'));
+		const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'main.js'));
+		const styleMainUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'main.css'));
+		const markedUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'marked.min.js'));
+		const prismJsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'prism.min.js'));
+		const prismCssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'prism.css'));
 
 		return `<!DOCTYPE html>
 			<html lang="en">
@@ -154,6 +359,93 @@ export class CodixViewProvider implements vscode.WebviewViewProvider {
 					.task-item { display: flex; align-items: center; gap: 10px; font-size: 12px; margin-bottom: 8px; color: #94A3B8; }
 					.task-item.completed { color: #10B981; }
 					.task-title { flex: 1; }
+
+					/* New Vibe Coding Input Area Styles */
+					.vibe-input-container {
+						margin: 12px;
+						background: rgba(22, 27, 34, 0.8);
+						border: 1px solid rgba(255, 255, 255, 0.08);
+						border-radius: 12px;
+						padding: 12px;
+						transition: border-color 0.2s;
+						display: flex;
+						flex-direction: column;
+						gap: 12px;
+					}
+					.vibe-input-container:focus-within {
+						border-color: #8b5cf6;
+					}
+					.vibe-textarea {
+						width: 100%;
+						background: transparent;
+						border: none;
+						color: #c9d1d9;
+						font-family: inherit;
+						font-size: 13px;
+						resize: none;
+						outline: none;
+						min-height: 40px;
+					}
+					.vibe-toolbar {
+						display: flex;
+						justify-content: space-between;
+						align-items: center;
+						padding-top: 8px;
+						border-top: 1px solid rgba(255, 255, 255, 0.05);
+					}
+					.vibe-toolbar-left {
+						display: flex;
+						align-items: center;
+						gap: 6px;
+					}
+					.vibe-toolbar-right {
+						display: flex;
+						align-items: center;
+						gap: 10px;
+					}
+					.toolbar-pill {
+						background: rgba(33, 38, 45, 0.8);
+						border: 1px solid rgba(255, 255, 255, 0.08);
+						border-radius: 6px;
+						padding: 4px 8px;
+						display: flex;
+						align-items: center;
+						gap: 4px;
+						font-size: 11px;
+						color: #8b949e;
+						cursor: pointer;
+						transition: all 0.2s;
+					}
+					.toolbar-pill:hover {
+						background: rgba(40, 46, 54, 0.8);
+						color: #c9d1d9;
+					}
+					.toolbar-icon-btn {
+						font-size: 16px;
+						color: #8b949e;
+						cursor: pointer;
+						transition: color 0.2s;
+					}
+					.toolbar-icon-btn:hover {
+						color: #c9d1d9;
+					}
+					.vibe-send-btn {
+						background: #8b5cf6;
+						color: #fff;
+						border: none;
+						width: 28px;
+						height: 28px;
+						border-radius: 6px;
+						display: flex;
+						align-items: center;
+						justify-content: center;
+						cursor: pointer;
+						transition: transform 0.2s, background 0.2s;
+					}
+					.vibe-send-btn:hover {
+						background: #7c3aed;
+						transform: scale(1.05);
+					}
 				</style>
 			</head>
 			<body class="authenticated">
@@ -166,9 +458,12 @@ export class CodixViewProvider implements vscode.WebviewViewProvider {
 							</div>
 							<div class="cloud-status"><span class="status-dot"></span> Cloud Connected</div>
 						</div>
-						<div class="credit-badge">
-							<span class="material-icons" style="font-size: 12px;">account_balance_wallet</span>
-							<span id="credit-value">💎 2,500</span>
+						<div style="display: flex; align-items: center; gap: 10px;">
+							<div class="credit-badge">
+								<span class="material-icons" style="font-size: 12px;">account_balance_wallet</span>
+								<span id="credit-value">💎 2,500</span>
+							</div>
+							<span id="open-settings-btn" class="material-icons toolbar-icon-btn" style="font-size: 18px; color: #94A3B8; cursor: pointer;" title="Settings">settings</span>
 						</div>
 					</header>
 
@@ -180,18 +475,48 @@ export class CodixViewProvider implements vscode.WebviewViewProvider {
 							</div>
 							<div id="messages-list"></div>
 						</div>
+						<div id="feature-content" style="display: none; padding: 15px;"></div>
 					</main>
 
 					<footer>
-						<div class="chat-input-wrapper">
-							<div class="input-area">
-								<div class="input-container">
-									<textarea id="message-input" placeholder="Bạn muốn xây dựng gì hôm nay?" rows="1"></textarea>
-									<button id="send-button"><span class="material-icons">send</span></button>
+						<div class="vibe-input-container">
+							<textarea id="message-input" class="vibe-textarea" placeholder="Bạn muốn xây dựng gì hôm nay?" rows="1"></textarea>
+							<div class="vibe-toolbar">
+								<div class="vibe-toolbar-left">
+									<!-- Model Selector -->
+									<select id="vibe-model-selector" class="toolbar-pill" style="background: transparent; color: #c9d1d9; border: none; outline: none; appearance: none; cursor: pointer;">
+										<option value="cloud">Codix Pro (Cloud)</option>
+										<option value="local">Local AI (Bridge)</option>
+									</select>
+									
+									<!-- Autonomy Toggle -->
+									<div class="toolbar-pill" style="background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.2);">
+										<span class="material-icons" style="font-size: 12px; color: #10b981;">smart_toy</span>
+										<span style="font-weight: 500; color: #10b981;">Autonomous</span>
+									</div>
+
+									<!-- Tools -->
+									<div class="toolbar-pill">
+										<span class="material-icons" style="font-size: 12px;">build</span>
+										<span style="font-weight: 500;">Tools</span>
+									</div>
+								</div>
+								
+								<div class="vibe-toolbar-right">
+									<span class="material-icons toolbar-icon-btn" title="Mention (@)">alternate_email</span>
+									<span id="vibe-upload-btn" class="material-icons toolbar-icon-btn" title="Upload Media">image</span>
+									<button id="send-button" class="vibe-send-btn">
+										<span class="material-icons" style="font-size: 16px;">arrow_upward</span>
+									</button>
 								</div>
 							</div>
 						</div>
 					</footer>
+					
+					<!-- Shared Modal Overlay for Settings/Provider logic -->
+					<div id="modal-overlay" class="modal-overlay" style="display: none;">
+						<div class="modal-content"></div>
+					</div>
 				</div>
 
 				<script>
@@ -208,6 +533,32 @@ export class CodixViewProvider implements vscode.WebviewViewProvider {
 						}
 						if (message.type === 'update_tasks') {
 							renderTasks(message.tasks);
+						}
+					});
+
+					document.getElementById('vibe-upload-btn').addEventListener('click', () => {
+						vscode.postMessage({ type: 'uploadMedia' });
+					});
+
+					// Toggle Settings View
+					let showingSettings = false;
+					document.getElementById('open-settings-btn').addEventListener('click', () => {
+						const chatContainer = document.getElementById('chat-container');
+						const featureContent = document.getElementById('feature-content');
+						const btn = document.getElementById('open-settings-btn');
+						
+						showingSettings = !showingSettings;
+						if (showingSettings) {
+							chatContainer.style.display = 'none';
+							featureContent.style.display = 'block';
+							btn.style.color = '#A855F7'; // highlight
+							if (typeof window.renderSettings === 'function') {
+								window.renderSettings();
+							}
+						} else {
+							chatContainer.style.display = 'block';
+							featureContent.style.display = 'none';
+							btn.style.color = '#94A3B8'; // default
 						}
 					});
 

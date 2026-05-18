@@ -14,7 +14,7 @@ export function activate(context: vscode.ExtensionContext) {
 	console.log('Codix Core AI is now active!');
 
 	// Chat Provider
-	const chatProvider = new CodixViewProvider(context.extensionUri);
+	const chatProvider = new CodixViewProvider(context);
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider(
 			CodixViewProvider.viewType,
@@ -24,7 +24,7 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	// Clip Provider
-	const clipProvider = new ClipViewProvider(context.extensionUri);
+	const clipProvider = new ClipViewProvider(context);
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider(
 			ClipViewProvider.viewType,

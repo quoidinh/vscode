@@ -6,6 +6,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { CodixEventManager } from './CodixEventManager.js';
 
 
 /**
@@ -66,6 +67,14 @@ export class ClipEditorPanel {
 		this._panel.webview.onDidReceiveMessage(message => {
 			if (message.type === 'ready') {
 				this._sendState();
+			}
+		}, null, this._disposables);
+
+		// Lắng nghe lệnh từ Khung 2 (Codix Chat) và bắn sang Webview (Khung 1)
+		CodixEventManager.getInstance().onDidReceiveOperations(operations => {
+			if (this._panel) {
+				console.log('[ClipEditorPanel] Forwarding operations to Webview:', operations);
+				this._panel.webview.postMessage({ type: 'applyTimelineOperations', operations });
 			}
 		}, null, this._disposables);
 	}

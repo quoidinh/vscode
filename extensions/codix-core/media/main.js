@@ -8,9 +8,9 @@
 /* eslint-disable */
 
 (function () {
-	const vscode = acquireVsCodeApi();
-	const serverUrl = "https://edge-gateway-rho.vercel.app"//'https://edge-gateway-rho.vercel.app';
-	const socketUrl = 'https://edge-gateway-rho.vercel.app';
+	const vscode = window.vscode || acquireVsCodeApi();
+	const serverUrl = 'https://coderx-backend-render.onrender.com';
+	const socketUrl = 'https://coderx-backend-render.onrender.com';
 	let socket;
 	let currentSessionId = null;
 	let currentProjectId = null;
@@ -297,7 +297,7 @@
 				handshakeAndInit();
 
 				// If we are currently in a feature view, reload it now that we have a token
-				const currentView = featureContent.dataset.view;
+				const currentView = featureContent ? featureContent.dataset.view : null;
 				if (currentView) {
 					switch (currentView) {
 						case 'settings': renderSettings(); break;
@@ -401,7 +401,8 @@
 
 	// Initialize Socket.IO
 	function initSocket() {
-		if (typeof io === 'undefined') {
+		const socketLib = window.io || (typeof io !== 'undefined' ? io : null);
+		if (!socketLib) {
 			console.error('[CoderX] Socket.io library (io) is undefined. Check index.html imports.');
 			return;
 		}
@@ -415,7 +416,7 @@
 			socket.disconnect();
 		}
 
-		socket = io(effectiveUrl, {
+		socket = socketLib(effectiveUrl, {
 			auth: {
 				token: authToken
 			},
@@ -1207,7 +1208,7 @@
 		if (contentEl) {
 			if (displayContent) {
 				contentEl.innerHTML = marked.parse(displayContent);
-				Prism.highlightAllUnder(contentEl);
+						if (typeof Prism !== 'undefined') Prism.highlightAllUnder(contentEl);
 			} else {
 				// All content was tool calls — show nothing yet (or a subtle indicator)
 				contentEl.innerHTML = '';
@@ -1223,8 +1224,8 @@
 
 		const contentEl = document.createElement('div');
 		contentEl.className = 'message-content';
-		contentEl.innerHTML = marked.parse(content);
-		Prism.highlightAllUnder(contentEl);
+		contentEl.innerHTML = (typeof marked !== 'undefined') ? marked.parse(content) : content;
+				if (typeof Prism !== 'undefined') Prism.highlightAllUnder(contentEl);
 		msgEl.appendChild(contentEl);
 
 		// Add action buttons
@@ -3474,116 +3475,42 @@
 	let agents = [];
 
 	async function loadSettings() {
-		console.log('[CoderX] loadSettings() sequence started...');
+		console.log('[Codix] loadSettings() from localStorage...');
 		try {
-			// 1. Core Settings
-			console.log('[CoderX] Fetching /api/settings...');
-			const settingsRes = await apiFetch(`${serverUrl}/api/settings`);
-			if (!settingsRes.ok) throw new Error(`Settings API returned status ${settingsRes.status}`);
-			const settings = await settingsRes.json();
-			console.log('[CoderX] Settings loaded:', Object.keys(settings).length, 'keys found');
+			// Hardcode providerTypes since we don't have a backend schema API in Codix Desktop
+			providerTypes = [
+				{ type: 'openai', name: 'OpenAI' },
+				{ type: 'anthropic', name: 'Anthropic' },
+				{ type: 'google', name: 'Google AI' },
+				{ type: 'openrouter', name: 'OpenRouter' },
+				{ type: 'groq', name: 'Groq' },
+				{ type: 'deepseek', name: 'DeepSeek' },
+				{ type: 'mistral', name: 'Mistral' },
+				{ type: 'ollama', name: 'Ollama (Local)' },
+				{ type: 'lmstudio', name: 'LM Studio (Local)' },
+				{ type: 'vllm', name: 'vLLM (Local)' },
+				{ type: 'custom', name: 'Custom OpenAI-compatible' }
+			];
 
-			// 2. Schema
-			console.log('[CoderX] Fetching /api/settings/schema...');
-			const schemaRes = await apiFetch(`${serverUrl}/api/settings/schema`);
-			if (!schemaRes.ok) throw new Error(`Schema API returned status ${schemaRes.status}`);
-			const schemaData = await schemaRes.json();
-			providerTypes = Array.isArray(schemaData.providerTypes) ? schemaData.providerTypes : [];
-			console.log('[CoderX] Schema loaded:', providerTypes.length, 'providers available');
+			// Load from localStorage
+			const savedStr = localStorage.getItem('codix_llm_settings');
+			const saved = savedStr ? JSON.parse(savedStr) : {};
 
-			// 3. Models
-			console.log('[CoderX] Fetching /api/settings/models...');
-			const modelsRes = await apiFetch(`${serverUrl}/api/settings/models`);
-			if (!modelsRes.ok) throw new Error(`Models API returned status ${modelsRes.status}`);
-			const loadedModels = await modelsRes.json();
-
-			// Ensure modelsData has expected structure
 			modelsData = {
-				available: Array.isArray(loadedModels.available) ? loadedModels.available : [],
-				current: loadedModels.current || { main: '', expert: '', aux: '' },
-				llmConfig: loadedModels.llmConfig || {},
-				providers: Array.isArray(loadedModels.providers) ? loadedModels.providers : [],
-				activeModels: loadedModels.llmConfig || {}, // Fallback until socket connects
-				activeRole: loadedModels.activeRole || 'main'
+				available: [],
+				current: saved.current || { main: '' },
+				llmConfig: saved.llmConfig || {},
+				providers: Array.isArray(saved.providers) ? saved.providers : [],
+				activeModels: saved.llmConfig || {},
+				activeRole: 'main'
 			};
 
-			// Try to set currentModelNameEl badge from loaded data
-			if (modelsData.llmConfig && modelsData.llmConfig[modelsData.activeRole] && currentModelNameEl) {
-				currentModelNameEl.textContent = modelsData.llmConfig[modelsData.activeRole].model || 'Select Model';
-			}
-
-			console.log('[CoderX] Models data loaded:', modelsData.providers.length, 'configured providers');
-
-			console.log('[CoderX] Triggering render sequence...');
+			console.log('[Codix] Loaded', modelsData.providers.length, 'providers from localStorage');
 			renderModelsView();
-			const mcpServers = settings.mcpServers ? (typeof settings.mcpServers === 'string' ? JSON.parse(settings.mcpServers) : settings.mcpServers) : [];
-			const s3Configs = settings.s3_configs ? (typeof settings.s3_configs === 'string' ? JSON.parse(settings.s3_configs) : settings.s3_configs) : [];
-
-			renderMCPList(mcpServers);
-			renderS3List(s3Configs);
-
-			// CRITICAL: Sync fetched settings back to localStorage so that subsequent "Save Changes" 
-			// don't overwrite them with empty/stale data.
-			const currentLocalSettings = localStorage.getItem('coderx_settings') ? JSON.parse(localStorage.getItem('coderx_settings')) : {};
-			localStorage.setItem('coderx_settings', JSON.stringify({
-				...currentLocalSettings,
-				mcpServers: JSON.stringify(mcpServers),
-				s3_configs: JSON.stringify(s3Configs),
-				models: JSON.stringify(modelsData) // Sync models data too!
-			}));
-
-			// Sync to extension host
-			vscode.postMessage({
-				type: 'syncSettings',
-				settings: {
-					mcpServers,
-					s3Configs,
-					s3_auto_backup: settings.s3_auto_backup,
-					enableWebAccess: settings.enableWebAccess !== false,
-					enableCommandExecution: settings.enableCommandExecution !== false,
-					restrictFilesystem: settings.restrictFilesystem !== false,
-					webFetchProxy: settings.webFetchProxy || ''
-				},
-				sessionId: currentSessionId
-			});
-
-			// Populate Security Toggles
-			const securityPane = document.getElementById('pane-security');
-			if (securityPane) {
-				const webAccessToggle = securityPane.querySelector('[data-setting="webAccess"]');
-				if (webAccessToggle) {
-					webAccessToggle.classList.toggle('active', settings.enableWebAccess !== false);
-					webAccessToggle.querySelector('div').style.left = webAccessToggle.classList.contains('active') ? '16px' : '2px';
-				}
-				const autoExecute = securityPane.querySelector('[data-setting="autoExecute"]');
-				if (autoExecute) {
-					autoExecute.classList.toggle('active', settings.enableCommandExecution !== false);
-					autoExecute.querySelector('div').style.left = autoExecute.classList.contains('active') ? '16px' : '2px';
-				}
-				const restrictedFsSwitch = document.querySelector('[data-setting="restrictedFs"]');
-				if (restrictedFsSwitch) {
-					restrictedFsSwitch.classList.toggle('active', settings.restrictFilesystem !== false);
-					restrictedFsSwitch.querySelector('div').style.left = restrictedFsSwitch.classList.contains('active') ? '16px' : '2px';
-				}
-
-				if (document.getElementById('web-fetch-proxy')) document.getElementById('web-fetch-proxy').value = settings.webFetchProxy || '';
-			}
-
-			// Populate S3 Config
-			const s3Container = document.getElementById('pane-s3');
-			if (s3Container) {
-				const autoBackupToggle = s3Container.querySelector('[data-setting="s3AutoBackup"]');
-				if (autoBackupToggle) {
-					autoBackupToggle.classList.toggle('active', settings.s3_auto_backup === true);
-					autoBackupToggle.querySelector('div').style.left = autoBackupToggle.classList.contains('active') ? '16px' : '2px';
-				}
-			}
-
-			await loadAgents();
-			console.log('[CoderX] loadSettings() completed successfully.');
 		} catch (e) {
-			console.error('[CoderX] CRITICAL: Failed to load settings:', e);
-			// Even if it fails, try to render whatever we have to avoid permanent loading screens
+			console.error('[Codix] loadSettings failed:', e);
+			providerTypes = [];
+			modelsData = { available: [], current: { main: '' }, llmConfig: {}, providers: [], activeModels: {}, activeRole: 'main' };
 			renderModelsView();
 		}
 	}
@@ -4319,22 +4246,15 @@
 			const provElem = document.getElementById(`role-${role}-provider`);
 			const modElem = document.getElementById(`role-${role}-model`);
 			if (provElem && modElem) {
-				const provVal = provElem.value;
-				const modVal = modElem.value;
-
-				// Only update if we actually have values, or if we want to explicitly clear them.
-				// But generally, if the elements exist, we take their values.
 				llmConfig[role] = {
-					provider: provVal,
-					model: modVal
+					provider: provElem.value,
+					model: modElem.value
 				};
 			} else if (modelsData.llmConfig && modelsData.llmConfig[role]) {
-				// Preserve existing if elements aren't in DOM (e.g. tab not rendered)
 				llmConfig[role] = modelsData.llmConfig[role];
 			}
 		});
 
-		// Update the global modelsData to match UI exactly before saving
 		modelsData.current = {
 			main: llmConfig.main?.model || '',
 			expert: llmConfig.expert?.model || '',
@@ -4342,37 +4262,25 @@
 		};
 		modelsData.llmConfig = llmConfig;
 
-		const finalModelsData = {
-			providers: modelsData.providers.filter(p => !p.options?.isSystem),
-			llmConfig: llmConfig
+		// Save to localStorage (offline-first)
+		const saveData = {
+			providers: modelsData.providers,
+			llmConfig: llmConfig,
+			current: modelsData.current
 		};
+		localStorage.setItem('codix_llm_settings', JSON.stringify(saveData));
 
-		try {
-			const payload = {
-				models: JSON.stringify(finalModelsData),
-				enableCommandExecution: document.querySelector('[data-setting="autoExecute"]')?.classList.contains('active') || false,
-				restrictFilesystem: document.querySelector('[data-setting="restrictedFs"]')?.classList.contains('active') || false,
-				enableWebAccess: document.querySelector('[data-setting="webAccess"]')?.classList.contains('active') || false,
-				webFetchProxy: document.getElementById('web-fetch-proxy')?.value || '',
-				mcpServers: localStorage.getItem('coderx_settings') ? JSON.parse(localStorage.getItem('coderx_settings')).mcpServers : '[]',
-				s3_configs: localStorage.getItem('coderx_settings') ? JSON.parse(localStorage.getItem('coderx_settings')).s3_configs : '[]',
-				s3_auto_backup: document.querySelector('[data-setting="s3AutoBackup"]')?.classList.contains('active') || false
-			};
+		// Sync to extension host via postMessage
+		vscode.postMessage({
+			type: 'saveLLMSettings',
+			settings: saveData
+		});
 
-			await apiFetch(`${serverUrl}/api/settings`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(payload)
-			});
-			if (btn) {
-				btn.textContent = 'Saved!';
-				setTimeout(() => { btn.textContent = 'Save Changes'; btn.disabled = false; }, 2000);
-			}
-		} catch (e) {
-			if (btn) {
-				btn.textContent = 'Error!';
-				btn.disabled = false;
-			}
+		console.log('[Codix] LLM settings saved:', modelsData.providers.length, 'providers');
+
+		if (btn) {
+			btn.textContent = '✓ Saved!';
+			setTimeout(() => { btn.textContent = 'Save Changes'; btn.disabled = false; }, 2000);
 		}
 	}
 
