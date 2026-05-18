@@ -1298,23 +1298,14 @@
 		const text = messageInput.value.trim();
 		if (!text) return;
 
-		// Block unauthenticated users
-		if (!isAuthenticated) {
+		const isLocalAI = window.llmConfig && window.llmConfig.provider !== 'cloud';
+		const isClipStudio = window.codixViewType === 'clip';
+
+		// Block unauthenticated users ONLY if they are trying to use Cloud AI
+		if (!isAuthenticated && !isLocalAI && !isClipStudio) {
 			const authModal = document.getElementById('auth-modal');
 			if (authModal) authModal.style.display = 'flex';
 			return;
-		}
-
-		if (!socket) {
-			appendMessage('ai', 'Error: Not connected to local server. Please ensure CoderX server is running.');
-			return;
-		}
-
-		if (isProcessing) {
-			// [Commercial UX] Allow interjections (adjustments) while the agent is busy.
-			// The backend handles chat_message during non-idle status as interjections.
-			console.log(`[CoderX] Sending interjection for session: ${currentSessionId}`);
-			// Fall through to send chat_message normally
 		}
 
 		let content;
@@ -1337,6 +1328,22 @@
 		// Clear images
 		attachedImages = [];
 		renderImagePreviews();
+
+		if (isLocalAI || isClipStudio || !socket) {
+			// Bypass socket, send via Extension Host
+			vscode.postMessage({
+				type: 'executeIntent',
+				text: text,
+				model: window.llmConfig ? window.llmConfig.provider : 'local',
+				providerConfig: window.llmConfig
+			});
+			setProcessing(true, 'Thinking...');
+			return;
+		}
+
+		if (isProcessing) {
+			console.log(`[CoderX] Sending interjection for session: ${currentSessionId}`);
+		}
 
 		socket.emit('chat_message', { content, sessionId: currentSessionId, projectId: currentProjectId });
 		setProcessing(true, 'Thinking...');

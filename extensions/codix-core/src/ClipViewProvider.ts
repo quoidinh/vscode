@@ -14,11 +14,15 @@ import { OrchestratorClient } from '@codix/sdk';
 export class ClipViewProvider implements vscode.WebviewViewProvider {
 	public static readonly viewType = 'codix.clipView';
 	private _view?: vscode.WebviewView;
-	private _client: OrchestratorClient;
+	private _client?: OrchestratorClient;
 
 	constructor(private readonly _context: vscode.ExtensionContext) {
-		const aiAddress = process.env.CODIX_AI_ADDR || 'localhost:50051';
-		this._client = new OrchestratorClient(aiAddress);
+		try {
+			const aiAddress = process.env.CODIX_AI_ADDR || 'localhost:50051';
+			this._client = new OrchestratorClient(aiAddress);
+		} catch (e: any) {
+			console.warn('[ClipView] OrchestratorClient unavailable (gRPC not loaded):', e.message);
+		}
 	}
 
 	public resolveWebviewView(
@@ -78,6 +82,14 @@ export class ClipViewProvider implements vscode.WebviewViewProvider {
 	private async _handleClipAction(text: string) {
 		if (!this._view) return;
 
+		if (!this._client) {
+			this._view.webview.postMessage({
+				type: 'response',
+				text: '⚠️ Chưa kết nối Local AI Server (gRPC). Hãy cấu hình LLM Provider trong Settings để sử dụng AI trực tiếp.'
+			});
+			return;
+		}
+
 		try {
 			this._view.webview.postMessage({ type: 'thinking', value: true });
 
@@ -92,7 +104,7 @@ export class ClipViewProvider implements vscode.WebviewViewProvider {
 
 			// Logic tự động mở Editor nếu yêu cầu tạo video
 			if (text.toLowerCase().includes('video') || text.toLowerCase().includes('clip')) {
-				ClipEditorPanel.createOrShow(this._extensionUri);
+				ClipEditorPanel.createOrShow(this._context.extensionUri);
 			}
 
 		} catch (err: any) {
@@ -105,9 +117,9 @@ export class ClipViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	private _getHtmlForWebview(webview: vscode.Webview) {
-		const styleMainUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'main.css'));
-		const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'main.js'));
-		const bridgeUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'bridge.js'));
+		const styleMainUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'main.css'));
+		const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'main.js'));
+		const bridgeUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'bridge.js'));
 
 		return `<!DOCTYPE html>
 			<html lang="en">
@@ -170,6 +182,7 @@ export class ClipViewProvider implements vscode.WebviewViewProvider {
 
 				<script>
 					window.vscode = (window.vscode) ? window.vscode : acquireVsCodeApi();
+					window.codixViewType = 'clip';
 					const vscode = window.vscode;
 					function openFullEditor() { vscode.postMessage({ type: 'openFullEditor' }); }
 					

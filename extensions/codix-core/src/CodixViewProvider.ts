@@ -13,12 +13,15 @@ import { OrchestratorClient } from '@codix/sdk';
 export class CodixViewProvider implements vscode.WebviewViewProvider {
 	public static readonly viewType = 'codix.chatView';
 	private _view?: vscode.WebviewView;
-	private _client: OrchestratorClient;
+	private _client?: OrchestratorClient;
 
 	constructor(private readonly _context: vscode.ExtensionContext) {
-		// Ưu tiên kết nối Local AI, fallback về Cloud nếu cần
-		const aiAddress = process.env.CODIX_AI_ADDR || 'localhost:50051';
-		this._client = new OrchestratorClient(aiAddress);
+		try {
+			const aiAddress = process.env.CODIX_AI_ADDR || 'localhost:50051';
+			this._client = new OrchestratorClient(aiAddress);
+		} catch (e: any) {
+			console.warn('[CodixView] OrchestratorClient unavailable (gRPC not loaded):', e.message);
+		}
 	}
 
 	public resolveWebviewView(
@@ -522,6 +525,7 @@ Khi nhận yêu cầu chỉnh sửa video, hãy trả về JSON operations nếu
 				<script>
 					// Khởi tạo vscode một lần duy nhất và gán vào window để bridge.js/main.js dùng chung
 					window.vscode = (window.vscode) ? window.vscode : acquireVsCodeApi();
+					window.codixViewType = 'codix';
 					const vscode = window.vscode;
 
 					window.addEventListener('message', event => {
