@@ -19,11 +19,9 @@ export class ClipEditorPanel {
 	private static currentExtensionUri: vscode.Uri | undefined;
 	private readonly _panel: vscode.WebviewPanel;
 	private readonly _extensionUri: vscode.Uri;
-
+	private readonly _context: vscode.ExtensionContext;
 	private _disposables: vscode.Disposable[] = [];
-	
-	// allow-any-unicode-next-line
-	// Initial State chuẩn xác cho hệ thống Layer Routing
+
 	private _initialState: any = {
 		isPlaying: false,
 		playheadTime: 3.1,
@@ -44,24 +42,24 @@ export class ClipEditorPanel {
 			] }
 		],
 		assets: {
-			// allow-any-unicode-next-line
 			media: [{ id: 'res1', name: '7803305037219.mp4', thumb: '🌿' }]
 		}
 	};
 
-	private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri) {
+	private constructor(panel: vscode.WebviewPanel, context: vscode.ExtensionContext) {
 		this._panel = panel;
-		this._extensionUri = extensionUri;
+		this._extensionUri = context.extensionUri;
+		this._context = context;
 		this._panel.webview.options = {
 			enableScripts: true,
 			localResourceRoots: [
-				extensionUri,
-				vscode.Uri.joinPath(extensionUri, 'media'),
-				vscode.Uri.joinPath(extensionUri, 'media', 'editor'),
-				vscode.Uri.joinPath(extensionUri, 'media', 'editor', 'assets'),
+				context.extensionUri,
+				vscode.Uri.joinPath(context.extensionUri, 'media'),
+				vscode.Uri.joinPath(context.extensionUri, 'media', 'editor'),
+				vscode.Uri.joinPath(context.extensionUri, 'media', 'editor', 'assets'),
 			]
 		};
-		this._panel.webview.html = this._getHtmlForWebview(this._panel.webview, extensionUri);
+		this._panel.webview.html = this._getHtmlForWebview(this._panel.webview, context.extensionUri);
 		this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
 		this._panel.webview.onDidReceiveMessage(message => {
@@ -80,11 +78,16 @@ export class ClipEditorPanel {
 	}
 
 	private _sendState() {
-		this._panel.webview.postMessage({ type: 'initState', state: this._initialState });
+		const settings = this._context.globalState.get('codix_llm_settings') || {};
+		this._panel.webview.postMessage({ 
+			type: 'initState', 
+			state: this._initialState,
+			aiConfig: settings 
+		});
 	}
 
-	public static createOrShow(extensionUri: vscode.Uri) {
-		ClipEditorPanel.currentExtensionUri = extensionUri;
+	public static createOrShow(context: vscode.ExtensionContext) {
+		ClipEditorPanel.currentExtensionUri = context.extensionUri;
 		if (ClipEditorPanel.currentPanel) {
 			ClipEditorPanel.currentPanel._panel.reveal(vscode.ViewColumn.One);
 			return;
@@ -93,13 +96,13 @@ export class ClipEditorPanel {
 			enableScripts: true,
 			retainContextWhenHidden: true,
 			localResourceRoots: [
-				extensionUri,
-				vscode.Uri.joinPath(extensionUri, 'media'),
-				vscode.Uri.joinPath(extensionUri, 'media', 'editor'),
-				vscode.Uri.joinPath(extensionUri, 'media', 'editor', 'assets'),
+				context.extensionUri,
+				vscode.Uri.joinPath(context.extensionUri, 'media'),
+				vscode.Uri.joinPath(context.extensionUri, 'media', 'editor'),
+				vscode.Uri.joinPath(context.extensionUri, 'media', 'editor', 'assets'),
 			]
 		});
-		ClipEditorPanel.currentPanel = new ClipEditorPanel(panel, extensionUri);
+		ClipEditorPanel.currentPanel = new ClipEditorPanel(panel, context);
 	}
 
 	public addClipExternal(type: string, assetName: string) {
@@ -194,23 +197,110 @@ export class ClipEditorPanel {
 						const urlStr = scriptURL instanceof URL ? scriptURL.toString() : scriptURL;
 						const resolvedURL = rewriteAssetUrl(urlStr);
 						console.log('[Codix Worker Interceptor] Intercepted worker creation for:', scriptURL, '->', resolvedURL, 'Options:', options);
-						try {
-							// Force classic worker type for all workers to allow internal importScripts calls flawlessly
-							if (options) {
-								options.type = 'classic';
-							}
 
-							// Classic Worker: use importScripts inside same-origin Blob wrapper
-							const workerCode = 'importScripts("' + resolvedURL + '");';
-							const blob = new Blob([workerCode], { type: 'application/javascript' });
-							const blobURL = URL.createObjectURL(blob);
-							console.log('[Codix Worker Interceptor] Successfully created Blob URL (Classic):', blobURL);
-							return new originalWorker(blobURL, options);
-						} catch (e) {
-							console.error('[Codix Worker Interceptor] Failed to create Blob URL fallback:', e);
-						}
-						// Fallback to original
-						return new originalWorker(resolvedURL, options);
+						// Create a Proxy Worker that records all operations until the real worker is loaded
+						const proxy = {
+							_realWorker: null,
+							_queue: [],
+							_listeners: {},
+							onmessage: null,
+							onerror: null,
+							postMessage: function(message, transfer) {
+								if (this._realWorker) {
+									this._realWorker.postMessage(message, transfer);
+								} else {
+									this._queue.push({ type: 'postMessage', args: [message, transfer] });
+								}
+							},
+							addEventListener: function(type, listener, options) {
+								if (this._realWorker) {
+									this._realWorker.addEventListener(type, listener, options);
+								} else {
+									if (!this._listeners[type]) this._listeners[type] = [];
+									this._listeners[type].push({ listener, options });
+								}
+							},
+							removeEventListener: function(type, listener, options) {
+								if (this._realWorker) {
+									this._realWorker.removeEventListener(type, listener, options);
+								} else {
+									if (this._listeners[type]) {
+										this._listeners[type] = this._listeners[type].filter(function(l) { return l.listener !== listener; });
+									}
+								}
+							},
+							terminate: function() {
+								if (this._realWorker) {
+									this._realWorker.terminate();
+								} else {
+									this._queue.push({ type: 'terminate', args: [] });
+								}
+							}
+						};
+
+						// Asynchronously fetch the worker script content using authorized fetch
+						fetch(resolvedURL)
+							.then(function(response) {
+								if (!response.ok) throw new Error('Network response was not ok');
+								return response.text();
+							})
+							.then(function(workerCode) {
+								// Create same-origin Blob with the actual worker script code!
+								const blob = new Blob([workerCode], { type: 'application/javascript' });
+								const blobURL = URL.createObjectURL(blob);
+								console.log('[Codix Worker Interceptor] Successfully loaded and inlined worker script:', resolvedURL);
+								
+								// Force classic type if needed or preserve options
+								const finalOptions = Object.assign({}, options);
+								if (resolvedURL.includes('ffmpeg') || resolvedURL.includes('worker-')) {
+									finalOptions.type = 'classic';
+								}
+
+								// Instantiate the real worker from same-origin Blob URL
+								const realWorker = new originalWorker(blobURL, finalOptions);
+								proxy._realWorker = realWorker;
+
+								// Forward native onmessage and onerror handlers
+								realWorker.onmessage = function(e) {
+									if (proxy.onmessage) proxy.onmessage(e);
+								};
+								realWorker.onerror = function(e) {
+									if (proxy.onerror) proxy.onerror(e);
+								};
+
+								// Register all recorded listeners
+								for (const type in proxy._listeners) {
+									proxy._listeners[type].forEach(function(l) {
+										realWorker.addEventListener(type, l.listener, l.options);
+									});
+								}
+
+								// Flush queue of recorded messages/actions
+								proxy._queue.forEach(function(action) {
+									if (action.type === 'postMessage') {
+										realWorker.postMessage.apply(realWorker, action.args);
+									} else if (action.type === 'terminate') {
+										realWorker.terminate();
+									}
+								});
+							})
+							.catch(function(err) {
+								console.error('[Codix Worker Interceptor] Failed to asynchronously inline worker:', resolvedURL, err);
+								// Fallback to classic importScripts wrapper if fetch fails
+								try {
+									const fallbackCode = 'importScripts("' + resolvedURL + '");';
+									const blob = new Blob([fallbackCode], { type: 'application/javascript' });
+									const blobURL = URL.createObjectURL(blob);
+									const realWorker = new originalWorker(blobURL, options);
+									proxy._realWorker = realWorker;
+									realWorker.onmessage = function(e) { if (proxy.onmessage) proxy.onmessage(e); };
+									realWorker.onerror = function(e) { if (proxy.onerror) proxy.onerror(e); };
+								} catch (e) {
+									console.error('[Codix Worker Interceptor] Critical fallback failure:', e);
+								}
+							});
+
+						return proxy;
 					};
 
 					// Disable Service Worker registration inside VS Code Webview to prevent 403 blocks

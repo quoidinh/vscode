@@ -94,6 +94,52 @@ export class CodixViewProvider implements vscode.WebviewViewProvider {
 			}
 
 			switch (message.type) {
+				case 'proxyFetch': {
+					const { requestId, url, options } = message;
+					try {
+						const nodeFetch = (await import('node-fetch')).default;
+						const fetchOptions: any = {
+							method: options.method || 'GET',
+							headers: options.headers || {}
+						};
+						if (options.body) {
+							fetchOptions.body = options.body;
+						}
+						
+						const res = await nodeFetch(url as any, fetchOptions);
+						const status = res.status;
+						const resHeaders: Record<string, string> = {};
+						res.headers.forEach((val: string, key: string) => {
+							resHeaders[key] = val;
+						});
+
+						let data: any;
+						const contentType = resHeaders['content-type'] || '';
+						if (contentType.includes('application/json')) {
+							data = await res.json();
+						} else {
+							data = await res.text();
+						}
+
+						webviewView.webview.postMessage({
+							type: 'proxyFetchResponse',
+							requestId,
+							success: true,
+							status,
+							headers: resHeaders,
+							data
+						});
+					} catch (e: any) {
+						console.error(`[Codix Extension Host] proxyFetch failed for ${url}:`, e);
+						webviewView.webview.postMessage({
+							type: 'proxyFetchResponse',
+							requestId,
+							success: false,
+							error: e.message
+						});
+					}
+					break;
+				}
 				case 'executeIntent':
 					await this._handleRealAction(message.text, message.model || 'cloud', message.providerConfig);
 					break;
@@ -302,8 +348,36 @@ export class CodixViewProvider implements vscode.WebviewViewProvider {
 		let body: string;
 
 		const systemPrompt = `Bạn là Codix Studio AI - trợ lý biên tập video thông minh. 
-Khi nhận yêu cầu chỉnh sửa video, hãy trả về JSON operations nếu có thể.
-Định dạng: { "message": "...", "operations": [...] }`;
+Khi nhận yêu cầu chỉnh sửa video, hãy trả về JSON operations dưới dạng JSON nếu có thể.
+Định dạng: { "message": "...", "operations": [...] }
+
+### Các thao tác Timeline (Operations) được hỗ trợ:
+1. Thao tác thêm chữ / phụ đề / tiêu đề (add_text):
+   {
+     "action": "add_text",
+     "startAt": 1.5,       // thời điểm bắt đầu (giây, kiểu số thực)
+     "duration": 4.5,      // thời lượng hiển thị (giây, kiểu số thực)
+     "content": "Nội dung văn bản hiển thị",
+     "style": true         // (tùy chọn) true nếu muốn áp dụng style nổi bật
+   }
+2. Thao tác thêm clip video / âm thanh từ thư viện (add_clip):
+   {
+     "action": "add_clip",
+     "startAt": 0.0        // (tùy chọn) thời điểm bắt đầu
+   }
+3. Thao tác tạo phụ đề tự động từ âm thanh/video trên timeline (auto_caption):
+   {
+     "action": "auto_caption"
+   }
+4. Thao tác xóa clip khỏi timeline (delete_clip):
+   {
+     "action": "delete_clip",
+     "clipId": "clip_id"   // (tùy chọn) ID của clip cần xóa
+   }
+
+Lưu ý quan trọng:
+- Luôn luôn trả về đúng định dạng JSON hợp lệ. Không viết văn bản thường bên ngoài khối JSON.
+- Các clip chữ phải được thiết lập startAt và duration hợp lý, không chồng chéo lên nhau trên cùng một phân đoạn trừ khi có chủ ý.`;
 
 		const fullPrompt = prompt + context;
 
@@ -584,7 +658,6 @@ Khi nhận yêu cầu chỉnh sửa video, hãy trả về JSON operations nếu
 								<span class="material-icons" style="font-size: 12px;">account_balance_wallet</span>
 								<span id="credit-value">💎 2,500</span>
 							</div>
-							<span id="open-settings-btn" class="material-icons toolbar-icon-btn" style="font-size: 18px; color: #94A3B8; cursor: pointer;" title="Settings">settings</span>
 						</div>
 					</header>
 
@@ -600,35 +673,62 @@ Khi nhận yêu cầu chỉnh sửa video, hãy trả về JSON operations nếu
 					</main>
 
 					<footer>
-						<div class="vibe-input-container">
-							<textarea id="message-input" class="vibe-textarea" placeholder="Bạn muốn xây dựng gì hôm nay?" rows="1"></textarea>
-							<div class="vibe-toolbar">
-								<div class="vibe-toolbar-left">
-									<!-- Model Selector -->
-									<select id="vibe-model-selector" class="toolbar-pill" style="background: transparent; color: #c9d1d9; border: none; outline: none; appearance: none; cursor: pointer;">
-										<option value="cloud">Codix Pro (Cloud)</option>
-										<option value="local">Local AI (Bridge)</option>
-									</select>
+						<div class="vibe-input-container" style="padding: 0px; overflow: hidden; gap: 0px;">
+							<textarea id="message-input" class="vibe-textarea" placeholder="Bạn muốn xây dựng gì hôm nay?" rows="1" style="padding: 12px 12px 0 12px; width: 100%; border: none; background: transparent; outline: none; resize: none; box-sizing: border-box;"></textarea>
+							<div class="vibe-toolbar" style="padding: 8px 12px 8px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+								<div class="vibe-toolbar-left" style="display: flex; align-items: center; gap: 6px;">
+									<!-- Model Selector Pill -->
+									<div id="vibe-model-selector-pill" class="toolbar-pill" style="cursor: pointer; position: relative; display: flex; align-items: center; gap: 4px;">
+										<span id="vibe-model-selector-icon" class="material-icons" style="font-size: 12px; color: #A855F7;">cloud</span>
+										<span id="vibe-selected-model-text" style="font-weight: 500;">Cloud AI</span>
+										<span class="material-icons" style="font-size: 12px; opacity: 0.5;">arrow_drop_down</span>
+									</div>
 									
+									<!-- Model Selection Popover (Absolute positioned above) -->
+									<div id="vibe-model-popover" class="vibe-popover" style="display: none; position: absolute; bottom: 100%; left: 0; z-index: 100;">
+										<!-- Will render dynamically via main.js -->
+									</div>
+
 									<!-- Autonomy Toggle -->
-									<div class="toolbar-pill" style="background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.2);">
+									<div class="toolbar-pill" style="background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.2); display: flex; align-items: center; gap: 4px;">
 										<span class="material-icons" style="font-size: 12px; color: #10b981;">smart_toy</span>
 										<span style="font-weight: 500; color: #10b981;">Autonomous</span>
 									</div>
 
 									<!-- Tools -->
-									<div class="toolbar-pill">
+									<div class="toolbar-pill" style="display: flex; align-items: center; gap: 4px;">
 										<span class="material-icons" style="font-size: 12px;">build</span>
 										<span style="font-weight: 500;">Tools</span>
 									</div>
 								</div>
 								
-								<div class="vibe-toolbar-right">
+								<div class="vibe-toolbar-right" style="display: flex; align-items: center; gap: 8px;">
 									<span class="material-icons toolbar-icon-btn" title="Mention (@)">alternate_email</span>
 									<span id="vibe-upload-btn" class="material-icons toolbar-icon-btn" title="Upload Media">image</span>
-									<button id="send-button" class="vibe-send-btn">
+									<button id="send-button" class="vibe-send-btn" style="display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; border: none; background: #A855F7; color: white; cursor: pointer;">
 										<span class="material-icons" style="font-size: 16px;">arrow_upward</span>
 									</button>
+								</div>
+							</div>
+							
+							<!-- Compact AI Status Bar -->
+							<div class="vibe-ai-status-bar" style="display: flex; align-items: center; justify-content: space-around; padding: 6px 12px; background: rgba(0, 0, 0, 0.2); border-top: 1px solid rgba(255, 255, 255, 0.05); font-size: 9px; color: #94A3B8; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;">
+								<div style="display: flex; align-items: center; gap: 3px;">
+									<span style="font-size: 10px;">🎙️</span>
+									<span style="font-weight: 500; color: #94A3B8;">STT:</span>
+									<span id="status-stt-val" style="font-weight: 600; color: #E2E8F0;">Whisper</span>
+								</div>
+								<div style="height: 10px; width: 1px; background: rgba(255, 255, 255, 0.08);"></div>
+								<div style="display: flex; align-items: center; gap: 3px;">
+									<span style="font-size: 10px;">👁️</span>
+									<span style="font-weight: 500; color: #94A3B8;">Vision:</span>
+									<span id="status-vision-val" style="font-weight: 600; color: #E2E8F0;">SAM2</span>
+								</div>
+								<div style="height: 10px; width: 1px; background: rgba(255, 255, 255, 0.08);"></div>
+								<div style="display: flex; align-items: center; gap: 3px;">
+									<span style="font-size: 10px;">🎬</span>
+									<span style="font-weight: 500; color: #94A3B8;">Video:</span>
+									<span id="status-video-val" style="font-weight: 600; color: #E2E8F0;">OpenReel</span>
 								</div>
 							</div>
 						</div>
@@ -664,25 +764,27 @@ Khi nhận yêu cầu chỉnh sửa video, hãy trả về JSON operations nếu
 
 					// Toggle Settings View
 					let showingSettings = false;
-					document.getElementById('open-settings-btn').addEventListener('click', () => {
+					window.toggleSettings = () => {
 						const chatContainer = document.getElementById('chat-container');
 						const featureContent = document.getElementById('feature-content');
-						const btn = document.getElementById('open-settings-btn');
 						
 						showingSettings = !showingSettings;
 						if (showingSettings) {
 							chatContainer.style.display = 'none';
 							featureContent.style.display = 'block';
-							btn.style.color = '#A855F7'; // highlight
 							if (typeof window.renderSettings === 'function') {
 								window.renderSettings();
 							}
 						} else {
 							chatContainer.style.display = 'block';
 							featureContent.style.display = 'none';
-							btn.style.color = '#94A3B8'; // default
 						}
-					});
+						
+						// Close Popover when opening settings
+						if (typeof window.closeAllMenus === 'function') {
+							window.closeAllMenus();
+						}
+					};
 
 					function renderTasks(tasks) {
 						const tasksList = document.getElementById('tasks-list');

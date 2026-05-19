@@ -41,43 +41,54 @@
 	window.renderKnowledge = renderKnowledge;
 	window.renderAgents = renderAgentsView;
 
+	const pendingFetches = {};
+
+	// Listen for proxyFetchResponse from extension host
+	window.addEventListener('message', event => {
+		const message = event.data;
+		if (message.type === 'proxyFetchResponse') {
+			const { requestId, success, data, status, headers, error } = message;
+			const pending = pendingFetches[requestId];
+			if (pending) {
+				delete pendingFetches[requestId];
+				if (success) {
+					pending.resolve({
+						status,
+						ok: status >= 200 && status < 300,
+						headers: {
+							get: (name) => headers[name.toLowerCase()] || null
+						},
+						json: async () => data,
+						text: async () => (typeof data === 'string' ? data : JSON.stringify(data))
+					});
+				} else {
+					pending.reject(new Error(error || 'Failed to fetch via extension host proxy'));
+				}
+			}
+		}
+	});
+
 	async function apiFetch(url, options = {}) {
 		const headers = options.headers || {};
 		if (authToken) {
 			headers['Authorization'] = `Bearer ${authToken}`;
 		}
 
-		try {
-			const res = await fetch(url, { ...options, headers });
-
-			// Đọc real backend URL từ Gateway header
-			const realBackendUrl = res.headers.get('x-real-backend-url');
-			if (realBackendUrl) {
-				const newSocketUrl = new URL(realBackendUrl).origin;
-				if (window.socketUrl !== newSocketUrl) {
-					console.log(`[CoderX] Backend hopping detected: ${window.socketUrl} -> ${newSocketUrl}`);
-					window.socketUrl = newSocketUrl;
-					// Khởi tạo lại socket nếu URL thay đổi
-					if (typeof initSocket === 'function') {
-						initSocket();
-					}
+		return new Promise((resolve, reject) => {
+			const requestId = 'fetch_' + Math.random().toString(36).substr(2, 9);
+			pendingFetches[requestId] = { resolve, reject };
+			
+			vscode.postMessage({
+				type: 'proxyFetch',
+				requestId,
+				url,
+				options: {
+					method: options.method || 'GET',
+					headers: headers,
+					body: options.body
 				}
-			}
-
-			if (res.status >= 500 && url.startsWith(serverUrl)) {
-				console.warn(`[CoderX] Gateway error ${res.status}, attempting direct fallback...`);
-				const directUrl = url.replace(serverUrl, window.socketUrl || socketUrl);
-				return fetch(directUrl, { ...options, headers });
-			}
-			return res;
-		} catch (e) {
-			if (url.startsWith(serverUrl)) {
-				console.warn(`[CoderX] Gateway network error, attempting direct fallback...`, e);
-				const directUrl = url.replace(serverUrl, window.socketUrl || socketUrl);
-				return fetch(directUrl, { ...options, headers });
-			}
-			throw e;
-		}
+			});
+		});
 	}
 
 	async function handshakeAndInit() {
@@ -1429,6 +1440,8 @@
 
 	function closeAllMenus() {
 		document.querySelectorAll('.popover-menu').forEach(m => m.style.display = 'none');
+		const vibePopover = document.getElementById('vibe-model-popover');
+		if (vibePopover) vibePopover.style.display = 'none';
 	}
 
 	// --- CONNECTIVITY MONITORING ---
@@ -3313,7 +3326,16 @@
 	async function renderSettings() {
 		featureContent.innerHTML = `
 			<div class="settings-container">
-				<div class="settings-tabs">
+				<div class="settings-header" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 16px 10px 16px;">
+					<div class="settings-header-left" style="display: flex; align-items: center;">
+						<span class="material-icons" style="font-size: 15px; color: #7c4dff; margin-right: 6px; font-weight: bold;">settings</span>
+						<span class="settings-header-title" style="font-size: 12px; font-weight: bold; color: #fff; letter-spacing: 0.5px; text-transform: uppercase;">Settings</span>
+					</div>
+					<button class="settings-close-btn" onclick="if (typeof window.toggleSettings === 'function') window.toggleSettings();" title="Close Settings" style="background: transparent; border: none; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 4px; border-radius: 4px; transition: all 0.2s;">
+						<span class="material-icons" style="font-size: 16px;">close</span>
+					</button>
+				</div>
+				<div class="settings-tabs" style="padding: 0 16px 12px 16px;">
 					<button class="settings-tab-btn active" data-tab="models">Models</button>
 					<button class="settings-tab-btn" data-tab="security">Security</button>
 					<button class="settings-tab-btn" data-tab="mcp">MCP</button>
@@ -3462,6 +3484,7 @@
 				</div>
 
 				<div class="settings-footer">
+					<button class="upgrade-btn cancel-btn" id="btn-cancel-settings" style="background: rgba(255,255,255,0.05); color: #fff; margin-right: 8px; border: 1px solid rgba(255,255,255,0.1); cursor: pointer; transition: all 0.2s;">Cancel</button>
 					<button class="upgrade-btn" id="btn-save-settings">Save Changes</button>
 				</div>
 			</div>
@@ -3494,6 +3517,15 @@
 			addBtn.onclick = () => {
 				console.log('[CoderX] Add Provider button clicked');
 				window.showProviderModal();
+			};
+		}
+
+		const cancelBtn = document.getElementById('btn-cancel-settings');
+		if (cancelBtn) {
+			cancelBtn.onclick = () => {
+				if (typeof window.toggleSettings === 'function') {
+					window.toggleSettings();
+				}
 			};
 		}
 
@@ -3544,11 +3576,13 @@
 
 			console.log('[Codix] Loaded', modelsData.providers.length, 'providers from localStorage');
 			renderModelsView();
+			if (typeof updateStatusModels === 'function') updateStatusModels();
 		} catch (e) {
 			console.error('[Codix] loadSettings failed:', e);
 			providerTypes = [];
 			modelsData = { available: [], current: { main: '' }, llmConfig: {}, providers: [], activeModels: {}, activeRole: 'main' };
 			renderModelsView();
+			if (typeof updateStatusModels === 'function') updateStatusModels();
 		}
 	}
 
@@ -3796,7 +3830,10 @@
 			const roles = [
 				{ id: 'aux', label: 'Auxiliary Model', desc: 'Search & Summarization' },
 				{ id: 'main', label: 'Main Model', desc: 'Logic & Coding' },
-				{ id: 'expert', label: 'Expert Model', desc: 'Architecture & Review' }
+				{ id: 'expert', label: 'Expert Model', desc: 'Architecture & Review' },
+				{ id: 'audio', label: 'Audio Engine', desc: 'Speech-to-Text & Voiceovers' },
+				{ id: 'vision', label: 'Vision Engine', desc: 'SAM2 & Object Isolation' },
+				{ id: 'video', label: 'Video Engine', desc: 'Timeline Operations & Scripts' }
 			];
 
 			rolesContainer.innerHTML = roles.map(role => `
@@ -4276,7 +4313,7 @@
 			btn.disabled = true;
 		}
 
-		const roles = ['main', 'expert', 'aux'];
+		const roles = ['main', 'expert', 'aux', 'audio', 'vision', 'video'];
 		const llmConfig = {};
 
 		roles.forEach(role => {
@@ -4295,7 +4332,10 @@
 		modelsData.current = {
 			main: llmConfig.main?.model || '',
 			expert: llmConfig.expert?.model || '',
-			aux: llmConfig.aux?.model || ''
+			aux: llmConfig.aux?.model || '',
+			audio: llmConfig.audio?.model || '',
+			vision: llmConfig.vision?.model || '',
+			video: llmConfig.video?.model || ''
 		};
 		modelsData.llmConfig = llmConfig;
 
@@ -4317,7 +4357,13 @@
 
 		if (btn) {
 			btn.textContent = '✓ Saved!';
-			setTimeout(() => { btn.textContent = 'Save Changes'; btn.disabled = false; }, 2000);
+			setTimeout(() => { 
+				btn.textContent = 'Save Changes'; 
+				btn.disabled = false; 
+				if (typeof window.toggleSettings === 'function') {
+					window.toggleSettings();
+				}
+			}, 800);
 		}
 	}
 
@@ -4837,6 +4883,8 @@
 		}
 	});
 
+	window.closeAllMenus = closeAllMenus;
+
 	vscode.postMessage({ type: 'webviewReady' });
 	handshakeAndInit();
 
@@ -4844,4 +4892,239 @@
 	if (typeof fetchPluginsFromMarket === 'function') {
 		fetchPluginsFromMarket();
 	}
+
+	// --- UNIFIED AI MODEL SELECTOR POPOVER ---
+	let vibeActiveTab = localStorage.getItem('vibe_ai_mode') || 'cloud';
+
+	function initVibeModelSelector() {
+		const pill = document.getElementById('vibe-model-selector-pill');
+		const popover = document.getElementById('vibe-model-popover');
+		if (!pill || !popover) return;
+
+		// Initial display sync
+		updatePillUI();
+		if (typeof updateStatusModels === 'function') updateStatusModels();
+
+		pill.onclick = (e) => {
+			e.stopPropagation();
+			const isVisible = popover.style.display === 'flex';
+			closeAllMenus();
+			if (!isVisible) {
+				popover.style.display = 'flex';
+				renderVibePopover();
+			}
+		};
+
+		popover.onclick = (e) => {
+			e.stopPropagation(); // Prevent closing popover when clicking inside
+		};
+	}
+
+	function updatePillUI() {
+		const label = document.getElementById('vibe-selected-model-text');
+		const icon = document.getElementById('vibe-model-selector-icon');
+		if (!label || !icon) return;
+
+		if (vibeActiveTab === 'cloud') {
+			label.textContent = 'Cloud AI';
+			icon.textContent = 'cloud';
+			icon.style.color = '#A855F7';
+		} else {
+			label.textContent = 'Local AI';
+			icon.textContent = 'computer';
+			icon.style.color = '#3B82F6';
+		}
+	}
+
+	function renderVibePopover() {
+		const popover = document.getElementById('vibe-model-popover');
+		if (!popover) return;
+
+		// Deduplicate and filter providers
+		const providers = modelsData.providers || [];
+		const isClipView = window.codixViewType === 'clip';
+
+		let fieldsHtml = '';
+		
+		// Decide which engines to show
+		const roles = isClipView 
+			? [
+				{ id: 'main', label: '📝 LLM Generator', desc: 'Logic & Scripts' },
+				{ id: 'image', label: '🖼️ Image Engine', desc: 'Asset Generation' },
+				{ id: 'audio', label: '🎙️ Audio Engine', desc: 'Text-to-Speech & Sound' },
+				{ id: 'video', label: '🎬 Video Engine', desc: 'Timeline Operations & Render' }
+			]
+			: [
+				{ id: 'main', label: '📝 LLM Generator', desc: 'Logic & Coding' }
+			];
+
+		fieldsHtml = roles.map(role => {
+			// Find provider object
+			const currentProv = modelsData.llmConfig?.[role.id]?.provider || '';
+			const currentModel = modelsData.llmConfig?.[role.id]?.model || '';
+
+			// Filter providers by tab: local types vs cloud types
+			const localTypes = ['ollama', 'lmstudio', 'vllm', 'sglang', 'airllm', 'transformers'];
+			const filteredProvs = providers.filter(p => {
+				const isLocal = localTypes.includes(p.type) || p.name.toLowerCase().includes('local') || p.name.toLowerCase().includes('lmstudio');
+				return vibeActiveTab === 'local' ? isLocal : !isLocal;
+			});
+
+			// Get the options for provider select
+			let providerOptions = `<option value="">-- Select Provider --</option>`;
+			filteredProvs.forEach(p => {
+				providerOptions += `<option value="${p.name}" ${currentProv === p.name ? 'selected' : ''}>${p.name}</option>`;
+			});
+
+			// Find model recommendations for selected provider
+			const matchedProv = filteredProvs.find(p => p.name === currentProv);
+			let models = matchedProv ? [...(matchedProv.models || [])] : [];
+			if (role.id === 'video') {
+				if (!models.includes('flux')) models.push('flux');
+				if (!models.includes('ltx studio 2.3')) models.push('ltx studio 2.3');
+			}
+
+			return `
+				<div class="popover-field">
+					<label>${role.label}</label>
+					<div style="display: flex; flex-direction: column; gap: 4px;">
+						<select id="popover-role-${role.id}-provider" onchange="window.handlePopoverProviderChange('${role.id}')">
+							${providerOptions}
+						</select>
+						<input type="text" id="popover-role-${role.id}-model" list="popover-recommendations-${role.id}" 
+									value="${currentModel}" placeholder="Select or type model" autocomplete="off">
+						<datalist id="popover-recommendations-${role.id}">
+							${models.map(m => `<option value="${m}">${m}</option>`).join('')}
+						</datalist>
+					</div>
+				</div>
+			`;
+		}).join('');
+
+		popover.innerHTML = `
+			<div class="popover-header">
+				<span class="popover-title">AI Engine Selector</span>
+				<div style="display: flex; align-items: center; gap: 8px;">
+					<span class="material-icons toolbar-icon-btn" style="font-size: 16px; opacity: 0.7; cursor: pointer; color: #94A3B8;" onclick="if (typeof window.toggleSettings === 'function') window.toggleSettings();" title="Settings">settings</span>
+					<span class="material-icons" style="font-size: 14px; opacity: 0.5; cursor: pointer;" onclick="closeAllMenus()">close</span>
+				</div>
+			</div>
+			<div class="popover-tabs">
+				<div class="popover-tab ${vibeActiveTab === 'cloud' ? 'active' : ''}" onclick="window.switchPopoverTab('cloud')">
+					<span style="font-size: 10px; margin-right: 4px;">☁️</span> Cloud AI
+				</div>
+				<div class="popover-tab ${vibeActiveTab === 'local' ? 'active' : ''}" onclick="window.switchPopoverTab('local')">
+					<span style="font-size: 10px; margin-right: 4px;">💻</span> Local AI
+				</div>
+			</div>
+			<div class="popover-content">
+				${fieldsHtml}
+			</div>
+			<div class="popover-footer">
+				<button class="popover-save-btn" onclick="window.savePopoverSettings()">Save & Apply</button>
+			</div>
+		`;
+	}
+
+	window.switchPopoverTab = (tab) => {
+		vibeActiveTab = tab;
+		localStorage.setItem('vibe_ai_mode', tab);
+		updatePillUI();
+		renderVibePopover();
+	};
+
+	window.handlePopoverProviderChange = (roleId) => {
+		const provSelect = document.getElementById(`popover-role-${roleId}-provider`);
+		const modelInput = document.getElementById(`popover-role-${roleId}-model`);
+		const datalist = document.getElementById(`popover-recommendations-${roleId}`);
+		if (!provSelect || !modelInput || !datalist) return;
+
+		const providerName = provSelect.value;
+		const matchedProv = modelsData.providers.find(p => p.name === providerName);
+		let models = matchedProv ? [...(matchedProv.models || [])] : [];
+		if (roleId === 'video') {
+			if (!models.includes('flux')) models.push('flux');
+			if (!models.includes('ltx studio 2.3')) models.push('ltx studio 2.3');
+		}
+
+		modelInput.value = models.length > 0 ? models[0] : '';
+		datalist.innerHTML = models.map(m => `<option value="${m}">${m}</option>`).join('');
+
+		// Trigger fetch if provider is local and has no models
+		if (providerName && models.length === 0) {
+			fetchProviderModels(providerName).then(() => {
+				// Re-render recommendations after fetch
+				const updatedProv = modelsData.providers.find(p => p.name === providerName);
+				if (updatedProv && updatedProv.models) {
+					datalist.innerHTML = updatedProv.models.map(m => `<option value="${m}">${m}</option>`).join('');
+					if (modelInput.value === '') {
+						modelInput.value = updatedProv.models[0] || '';
+					}
+				}
+			});
+		}
+	};
+
+	window.savePopoverSettings = () => {
+		const isClipView = window.codixViewType === 'clip';
+		const roles = isClipView ? ['main', 'image', 'audio', 'video'] : ['main'];
+		
+		if (!modelsData.llmConfig) modelsData.llmConfig = {};
+		if (!modelsData.current) modelsData.current = {};
+
+		roles.forEach(role => {
+			const provSelect = document.getElementById(`popover-role-${role}-provider`);
+			const modelInput = document.getElementById(`popover-role-${role}-model`);
+			if (provSelect && modelInput) {
+				modelsData.llmConfig[role] = {
+					provider: provSelect.value,
+					model: modelInput.value
+				};
+				modelsData.current[role] = modelInput.value;
+			}
+		});
+
+		// Save to localStorage
+		const saveData = {
+			providers: modelsData.providers,
+			llmConfig: modelsData.llmConfig,
+			current: modelsData.current
+		};
+		localStorage.setItem('codix_llm_settings', JSON.stringify(saveData));
+
+		// Sync with Extension Host
+		vscode.postMessage({
+			type: 'saveLLMSettings',
+			settings: saveData
+		});
+
+		closeAllMenus();
+		showNotification('✓ AI Settings saved successfully!', 'success');
+		if (typeof updateStatusModels === 'function') updateStatusModels();
+
+		// Dispatch a custom event so other components (like Titlebar) know settings loaded
+		const event = new CustomEvent('aiConfigLoaded', { detail: saveData });
+		window.dispatchEvent(event);
+	};
+
+	function updateStatusModels() {
+		const sttVal = document.getElementById('status-stt-val');
+		const visionVal = document.getElementById('status-vision-val');
+		const videoVal = document.getElementById('status-video-val');
+		
+		if (sttVal) {
+			sttVal.textContent = modelsData.llmConfig?.audio?.model || modelsData.current?.audio || 'Whisper';
+		}
+		if (visionVal) {
+			visionVal.textContent = modelsData.llmConfig?.vision?.model || modelsData.current?.vision || 'SAM2';
+		}
+		if (videoVal) {
+			videoVal.textContent = modelsData.llmConfig?.video?.model || modelsData.current?.video || 'OpenReel';
+		}
+	}
+
+	window.updateStatusModels = updateStatusModels;
+
+	// Initialize on load
+	initVibeModelSelector();
 })();
